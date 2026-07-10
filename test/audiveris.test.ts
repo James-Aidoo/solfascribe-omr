@@ -72,15 +72,25 @@ describe('convertScore — the corpus-taught contract', () => {
 });
 
 describe('log parsing helpers', () => {
-  it('extracts broken sheets from both phrasing shapes', () => {
+  it('extracts broken sheets — including the REAL 5.10.2 log shapes', () => {
+    // The real batch log (verified against the corpus's Bue m'ani): the ordinal lives in
+    // the book tag, not after the word "sheet".
+    expect(brokenSheetsOf("INFO  [Bue_m'ani#2]  SheetStub 1194 | Sheet Bue_m'ani#2 flagged as invalid.")).toEqual([2]);
+    expect(brokenSheetsOf("WARN  [Bue_m'ani#2]  Book 2044 | Error processing stub")).toEqual([2]);
+    // The fake/simple shapes still parse.
     expect(brokenSheetsOf('Sheet #2 flagged invalid — export aborted')).toEqual([2]);
     expect(brokenSheetsOf('Error processing on sheet 3\nsheet #5 invalid')).toEqual([3, 5]);
     expect(brokenSheetsOf('all sheets fine')).toEqual([]);
+    // Negated phrasing must not exclude a healthy page from the salvage (review note).
+    expect(brokenSheetsOf('sheet #4 processed without error')).toEqual([]);
+    expect(brokenSheetsOf('no error on sheet 6')).toEqual([]);
   });
 
-  it('extracts the total sheet count when stated', () => {
+  it('extracts the total sheet count — stated, or the highest ordinal the run touched', () => {
     expect(totalSheetsOf('Book badsheet has 3 sheets')).toBe(3);
     expect(totalSheetsOf('sheets: 12')).toBe(12);
+    // The real batch log states no total; stub/sheet/image ordinals carry it.
+    expect(totalSheetsOf('End of Stub#1\nStored /sheet#2/sheet#2.xml\nLoaded image #2')).toBe(2);
     expect(totalSheetsOf('nothing here')).toBeNull();
   });
 });

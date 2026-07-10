@@ -17,13 +17,15 @@ import { createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { JobStore } from './jobs.js';
+import { JobStore, QueueFullError } from './jobs.js';
 
 const environment = process.env;
 const configuration = {
   port: Number(environment.PORT ?? 8480),
   // Space-separated so a wrapper like `node fake.mjs` works; quote-free paths only —
-  // point AUDIVERIS_CMD at a shim script if the install path contains spaces.
+  // point AUDIVERIS_CMD at a shim script if the install path contains spaces (the shim
+  // must `exec` the real binary, or a timeout SIGKILL lands on the shim and orphans
+  // the JVM; note Node ≥ 22 refuses to spawn .bat/.cmd directly).
   audiverisCommand: (environment.AUDIVERIS_CMD ?? 'audiveris').split(' '),
   timeoutMs: Number(environment.OMR_TIMEOUT_MS ?? 10 * 60 * 1000),
   jobTtlMs: Number(environment.JOB_TTL_MS ?? 15 * 60 * 1000),
@@ -31,6 +33,7 @@ const configuration = {
   corsOrigin: environment.CORS_ORIGIN ?? '*',
   maxUploadBytes: Number(environment.MAX_UPLOAD_MB ?? 40) * 1024 * 1024,
   concurrency: Number(environment.OMR_CONCURRENCY ?? 1),
+  maxQueuedJobs: Number(environment.MAX_QUEUED_JOBS ?? 25),
 };
 
 export function buildServer(store: JobStore) {
@@ -44,8 +47,13 @@ export function buildServer(store: JobStore) {
     const upload = await request.file();
     if (!upload) return reply.code(400).send({ error: 'Send the score as a multipart file field.' });
     const fileBytes = await upload.toBuffer();
-    const job = await store.submit(upload.filename || 'score.pdf', fileBytes);
-    return reply.code(202).send({ jobId: job.id });
+    try {
+      const job = await store.submit(upload.filename || 'score.pdf', fileBytes);
+      return await reply.code(202).send({ jobId: job.id });
+    } catch (error) {
+      if (error instanceof QueueFullError) return reply.code(429).send({ error: error.message });
+      throw error;
+    }
   });
 
   server.get('/jobs/:id', async (request, reply) => {
@@ -65,7 +73,9 @@ export function buildServer(store: JobStore) {
   server.get('/jobs/:id/files/:name', async (request, reply) => {
     const { id, name } = request.params as { id: string; name: string };
     // The name round-trips through the job's own manifest — never trusted as a path.
-    const movementPath = store.movementPathOf(id, decodeURIComponent(name));
+    // Fastify has ALREADY percent-decoded the param; decoding again double-decoded
+    // %-containing names (a literal % even threw) — review blocker.
+    const movementPath = store.movementPathOf(id, name);
     if (!movementPath) return reply.code(404).send({ error: 'No such movement file.' });
     return reply
       .header('content-type', 'application/vnd.recordare.musicxml')
@@ -87,6 +97,7 @@ async function main() {
     workRoot: configuration.workRoot,
     jobTtlMs: configuration.jobTtlMs,
     concurrency: configuration.concurrency,
+    maxQueuedJobs: configuration.maxQueuedJobs,
     omr: { audiverisCommand: configuration.audiverisCommand, timeoutMs: configuration.timeoutMs },
   });
   setInterval(() => void store.sweepExpired(), 60 * 1000).unref();

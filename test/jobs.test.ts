@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { JobStore } from '../src/jobs';
+import { JobStore, QueueFullError } from '../src/jobs';
 
 const FAKE: readonly string[] = ['node', join(process.cwd(), 'fake-audiveris', 'fake.mjs')];
 
@@ -41,6 +41,20 @@ describe('JobStore — queue, results, and transient files', () => {
     const finished = store.get(job.id)!;
     expect(finished.status).toBe('done');
     expect(finished.result?.movements.map((movement) => movement.filename)).toEqual(['ok/ok.mxl']);
+  });
+
+  it('refuses a submission when the queue is at its cap (the 429 path)', async () => {
+    const workRoot = await mkdtemp(join(tmpdir(), 'omr-jobs-'));
+    workRoots.push(workRoot);
+    const store = new JobStore({
+      workRoot,
+      jobTtlMs: 60_000,
+      maxQueuedJobs: 0,
+      omr: { audiverisCommand: FAKE, timeoutMs: 30_000 },
+    });
+    await expect(store.submit('ok.pdf', Buffer.from('ok\n'))).rejects.toBeInstanceOf(
+      QueueFullError,
+    );
   });
 
   it('stores the upload under a sanitized name (spaces and separators become underscores)', async () => {

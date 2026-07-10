@@ -57,6 +57,9 @@ export interface OmrResult {
 }
 
 const LOG_TAIL_CHARS = 4000;
+/** Salvage is for BOOKS (tens of pages); a log-derived "total" beyond this is nonsense
+ *  and must not size an allocation (the value comes from untrusted text). */
+const MAX_SALVAGE_SHEETS = 2000;
 
 interface ProcessOutcome {
   log: string;
@@ -118,24 +121,39 @@ async function collectMovements(directory: string): Promise<MovementFile[]> {
   return movements.sort((left, right) => left.filename.localeCompare(right.filename));
 }
 
-/** The 1-based sheets the log reports as broken (invalid pages, per-sheet errors). */
+/**
+ * The 1-based sheets the log reports as broken. The REAL 5.10.2 batch log carries the
+ * sheet ordinal inside the book tag — `Sheet Bue_m'ani#2 flagged as invalid.` /
+ * `WARN [Bue_m'ani#2] … Error processing stub` — so the number is read from `#N` (or a
+ * bare "sheet N") on any line that reports the breakage. Negated phrasings ("without
+ * error", "no error") don't count: over-excluding a healthy page would silently shrink
+ * the salvaged book (review note).
+ */
 export function brokenSheetsOf(log: string): number[] {
   const sheets = new Set<number>();
-  // Two shapes seen in real 5.10.2 logs: a sheet declared "invalid", and a sheet whose
-  // processing errored out. Both block the whole-book export.
-  for (const match of log.matchAll(/sheet\s*#?(\d+)[^\n]*\b(invalid|error)/gi)) {
-    sheets.add(Number(match[1]));
-  }
-  for (const match of log.matchAll(/\b(?:invalid|error)[^\n]*\bsheet\s*#?(\d+)/gi)) {
-    sheets.add(Number(match[1]));
+  for (const line of log.split(/\r?\n/)) {
+    if (/without error|no error/i.test(line)) continue;
+    const reportsBreakage =
+      /flagged as invalid|error processing stub/i.test(line) ||
+      (/\b(?:invalid|error)\b/i.test(line) && /sheet/i.test(line));
+    if (!reportsBreakage) continue;
+    const match = /#(\d+)/.exec(line) ?? /sheet\s+(\d+)/i.exec(line);
+    if (match) sheets.add(Number(match[1]));
   }
   return [...sheets].sort((left, right) => left - right);
 }
 
-/** The book's total sheet count, when the log states it; null otherwise. */
+/** The book's total sheet count: a stated total when the log gives one, else the highest
+ *  stub/sheet/image ordinal the run touched (the batch log states no total; every sheet
+ *  leaves `Stub#N` / `sheet#N` / `image #N` traces). */
 export function totalSheetsOf(log: string): number | null {
-  const match = /(\d+)\s+sheets?\b/i.exec(log) ?? /sheets?\s*[:=]\s*(\d+)/i.exec(log);
-  return match ? Number(match[1]) : null;
+  const stated = /(\d+)\s+sheets?\b/i.exec(log) ?? /sheets?\s*[:=]\s*(\d+)/i.exec(log);
+  if (stated) return Number(stated[1]);
+  let highestOrdinal = 0;
+  for (const match of log.matchAll(/(?:stub|sheet|image)\s*#(\d+)/gi)) {
+    highestOrdinal = Math.max(highestOrdinal, Number(match[1]));
+  }
+  return highestOrdinal > 0 ? highestOrdinal : null;
 }
 
 function classifyFailure(log: string, timedOut: boolean): { class: OmrFailureClass; detail: string } {
@@ -159,7 +177,10 @@ async function runOnce(
   sheets?: readonly number[],
 ): Promise<{ outcome: ProcessOutcome; movements: MovementFile[] }> {
   await mkdir(outputDirectory, { recursive: true });
-  const sheetArguments = sheets && sheets.length > 0 ? ['-sheets', sheets.join(' ')] : [];
+  // One argv entry PER sheet number: unambiguous under args4j's int-array handler,
+  // where a single space-joined token depends on the handler splitting it (review note).
+  const sheetArguments =
+    sheets && sheets.length > 0 ? ['-sheets', ...sheets.map(String)] : [];
   const outcome = await runProcess(
     options.audiverisCommand,
     ['-batch', '-export', ...sheetArguments, '-output', outputDirectory, inputPath],
@@ -186,9 +207,16 @@ export async function convertScore(
 
   // Per-sheet salvage: Audiveris refuses whole-book export over one broken page. When
   // the log names the broken sheets AND the total, retry on the healthy complement.
+  // The total is capped: it is parsed from a log line, and allocating an unbounded
+  // array from untrusted text would be a self-inflicted out-of-memory (review note).
   const brokenSheets = brokenSheetsOf(fullPass.outcome.log);
   const totalSheets = totalSheetsOf(fullPass.outcome.log);
-  if (!fullPass.outcome.timedOut && brokenSheets.length > 0 && totalSheets !== null) {
+  const salvageable =
+    !fullPass.outcome.timedOut &&
+    brokenSheets.length > 0 &&
+    totalSheets !== null &&
+    totalSheets <= MAX_SALVAGE_SHEETS;
+  if (salvageable) {
     const healthySheets = Array.from({ length: totalSheets }, (_, index) => index + 1).filter(
       (sheetNumber) => !brokenSheets.includes(sheetNumber),
     );

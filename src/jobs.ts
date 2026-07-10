@@ -25,10 +25,12 @@ export interface Job {
   workDirectory: string;
 }
 
-/** A filesystem-safe version of the upload's name (path separators and control
- *  characters out, extension kept); a degenerate name falls back to "score.pdf". */
+/** A filesystem-safe version of the upload's name — path separators, whitespace,
+ *  shell-hostile characters, and control characters (the class uses \u escapes only;
+ *  a literal control byte in a regex once slipped in unseen) become underscores; the
+ *  extension survives. A degenerate name falls back to "score.pdf". */
 function sanitizeFilename(name: string): string {
-  const cleaned = name.replace(/[\\/:*?"<>|\s-]+/g, '_').trim();
+  const cleaned = name.replace(/[\\/:*?"<>|\s\u0000-\u001f-]+/g, '_').trim();
   return cleaned === '' || cleaned === '.' || cleaned === '..' ? 'score.pdf' : cleaned;
 }
 
@@ -40,6 +42,17 @@ export interface JobStoreOptions {
   jobTtlMs: number;
   /** How many jobs may run concurrently (default 1 — Audiveris is memory-hungry). */
   concurrency?: number;
+  /** Queue-depth cap (default 25): each queued job holds an upload on disk behind a
+   *  slow worker, so an unbounded queue is a cheap disk-fill DoS (review note). A
+   *  submission over the cap is refused — the route answers 429. */
+  maxQueuedJobs?: number;
+}
+
+/** Thrown when the queue is full — the HTTP layer maps it to 429. */
+export class QueueFullError extends Error {
+  constructor() {
+    super('The conversion queue is full — try again shortly.');
+  }
 }
 
 export class JobStore {
@@ -54,6 +67,7 @@ export class JobStore {
 
   /** Persist the upload, enqueue it, and kick the worker. */
   async submit(scoreName: string, fileBytes: Buffer): Promise<Job> {
+    if (this.queue.length >= (this.options.maxQueuedJobs ?? 25)) throw new QueueFullError();
     const id = randomUUID();
     const workDirectory = join(this.options.workRoot, id);
     const inputFilename = sanitizeFilename(scoreName);
@@ -86,7 +100,10 @@ export class JobStore {
     return movement ? join(job.workDirectory, 'out', movement.filename) : null;
   }
 
-  /** Remove a job and its files (client says "collected" — or the TTL sweeper does). */
+  /** Remove a job and its files (client says "collected" — or the TTL sweeper does).
+   *  Deleting a RUNNING job removes its files at once (the privacy contract) but lets
+   *  the subprocess finish into the void — its runtime is already bounded by the OMR
+   *  timeout, so a kill-on-delete isn't worth the plumbing (review note, accepted). */
   async delete(id: string): Promise<boolean> {
     const job = this.jobs.get(id);
     if (!job) return false;

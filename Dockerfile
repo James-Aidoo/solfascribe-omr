@@ -25,8 +25,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 COPY --from=audiveris-build /build/app/build/install/app /opt/audiveris
 
 WORKDIR /service
-COPY package.json package-lock.json* ./
-RUN npm install --omit=dev && npm install tsx typescript
+COPY package.json package-lock.json ./
+# npm ci honours the lockfile exactly — no unpinned installs (review note).
+RUN npm ci --omit=dev
 COPY src ./src
 COPY tsconfig.json ./
 
@@ -34,5 +35,8 @@ ENV AUDIVERIS_CMD=/opt/audiveris/bin/Audiveris \
     PORT=8480 \
     WORK_ROOT=/tmp/solfascribe-omr
 EXPOSE 8480
+# Not root (review note): the service only needs its own files and WORK_ROOT.
+RUN useradd --system --create-home omr && chown -R omr /service
+USER omr
 HEALTHCHECK --interval=30s --timeout=5s CMD curl -sf http://localhost:8480/healthz || exit 1
 CMD ["npx", "tsx", "src/server.ts"]

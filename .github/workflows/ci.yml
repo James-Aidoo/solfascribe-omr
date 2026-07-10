@@ -12,6 +12,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+      - run: npm ci
       # The suite runs against the bundled fake Audiveris — no Java needed in CI.
       - run: npm run verify
+
+  # Build-verifies the image (including the Audiveris source build) — the one check a
+  # Docker-less dev machine can't run locally.
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t solfascribe-omr .

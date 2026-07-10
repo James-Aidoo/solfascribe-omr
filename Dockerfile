@@ -4,14 +4,16 @@
 # release tag; stage 2 is the slim runtime: JRE + Tesseract + Node for the glue service.
 # See NOTICE.md for the licence split (MIT glue, AGPL engine).
 
-FROM eclipse-temurin:21-jdk AS audiveris-build
+# Audiveris 5.10.2 declares theMinJavaVersion 25 — a 21 JDK fails compileJava with
+# "invalid source release: 25".
+FROM eclipse-temurin:25-jdk AS audiveris-build
 ARG AUDIVERIS_VERSION=5.10.2
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch ${AUDIVERIS_VERSION} https://github.com/Audiveris/audiveris.git /build
 WORKDIR /build
 RUN ./gradlew --no-daemon :app:installDist
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:25-jre
 # Tesseract runtime + English traineddata (Audiveris's OCR backend) and the fonts a
 # headless engraving pass expects.
 RUN apt-get update && apt-get install -y --no-install-recommends \

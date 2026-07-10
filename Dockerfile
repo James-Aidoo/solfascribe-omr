@@ -39,8 +39,11 @@ ENV AUDIVERIS_CMD=/opt/audiveris/bin/Audiveris \
 EXPOSE 8480
 # Not root (review note): the service only needs its own files and WORK_ROOT.
 # UID 1000 specifically — Hugging Face Spaces runs Docker Spaces as that UID, so the
-# same image works there unchanged.
-RUN useradd --create-home --uid 1000 omr && chown -R omr /service
+# same image works there unchanged. The Ubuntu base already ships a UID-1000 user
+# ("ubuntu" as of 24.04) — remove whoever holds the UID first.
+RUN existing="$(getent passwd 1000 | cut -d: -f1)" \
+    && if [ -n "$existing" ]; then userdel -r "$existing"; fi \
+    && useradd --create-home --uid 1000 omr && chown -R omr /service
 USER omr
 HEALTHCHECK --interval=30s --timeout=5s CMD curl -sf http://localhost:8480/healthz || exit 1
 CMD ["npx", "tsx", "src/server.ts"]

@@ -7,8 +7,16 @@ import { basename, join } from 'node:path';
 const processArguments = process.argv.slice(2);
 const outputIndex = processArguments.indexOf('-output');
 const outputDirectory = outputIndex >= 0 ? processArguments[outputIndex + 1] : '.';
+// One argv entry per sheet number, like the real service sends (int[] handler form).
 const sheetsIndex = processArguments.indexOf('-sheets');
-const sheets = sheetsIndex >= 0 ? processArguments[sheetsIndex + 1] : null;
+let sheets = null;
+if (sheetsIndex >= 0) {
+  sheets = [];
+  for (let index = sheetsIndex + 1; index < processArguments.length; index++) {
+    if (!/^\d+$/.test(processArguments[index])) break;
+    sheets.push(processArguments[index]);
+  }
+}
 const inputPath = processArguments[processArguments.length - 1];
 const scenario = basename(inputPath).replace(/\.pdf$/i, '');
 // The job store always uploads as input.pdf — the scenario travels in the CONTENT when
@@ -44,7 +52,7 @@ switch (effectiveScenario) {
     break;
   case 'badsheet':
     console.log('Book badsheet has 3 sheets');
-    if (sheets && !sheets.split(/\s+/).includes('2')) {
+    if (sheets && !sheets.includes('2')) {
       writeMovement('badsheet', 'badsheet.mxl');
     } else {
       console.log('Sheet #2 flagged invalid — export aborted');

@@ -1,3 +1,13 @@
+---
+title: SolfaScribe OMR
+emoji: 🎼
+colorFrom: red
+colorTo: yellow
+sdk: docker
+app_port: 8480
+pinned: false
+---
+
 # solfascribe-omr
 
 A thin, self-hostable **optical music recognition service**: a PDF or image score goes
@@ -61,6 +71,30 @@ Configuration (environment): `AUDIVERIS_CMD`, `PORT` (8480), `OMR_TIMEOUT_MS` (1
 files, and manifest-only file serving — but it ships with no authentication and
 `CORS_ORIGIN=*`. Front it with your own auth/rate limiting, set `CORS_ORIGIN` to your
 app's origin, and size the work-root disk for `MAX_QUEUED_JOBS × MAX_UPLOAD_MB`.
+
+### Free dev instance: Hugging Face Spaces
+
+The repo is ready to run as a **Docker Space** (the YAML block at the top of this file
+is the Space metadata; the container user is UID 1000 as Spaces requires). The free CPU
+tier (2 vCPU / 16 GB) is enough for real scores; the Space sleeps when idle and wakes on
+the next request.
+
+1. Create a free account at huggingface.co, then **New Space** → SDK **Docker** →
+   hardware **CPU basic (free)** → visibility Public.
+2. Push this repo to the Space (it builds the Dockerfile there — takes ~15 min the
+   first time):
+
+   ```bash
+   git remote add space https://huggingface.co/spaces/<your-username>/solfascribe-omr
+   git push space main
+   ```
+
+   (Authenticate with a Hugging Face access token as the password.)
+3. The service answers at `https://<your-username>-solfascribe-omr.hf.space` —
+   check `/healthz`.
+
+A free public Space is exactly that — public. The queue and upload caps bound abuse,
+but treat it as a development instance, not production.
 
 ## Development
 

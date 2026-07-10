@@ -38,7 +38,9 @@ ENV AUDIVERIS_CMD=/opt/audiveris/bin/Audiveris \
     WORK_ROOT=/tmp/solfascribe-omr
 EXPOSE 8480
 # Not root (review note): the service only needs its own files and WORK_ROOT.
-RUN useradd --system --create-home omr && chown -R omr /service
+# UID 1000 specifically — Hugging Face Spaces runs Docker Spaces as that UID, so the
+# same image works there unchanged.
+RUN useradd --create-home --uid 1000 omr && chown -R omr /service
 USER omr
 HEALTHCHECK --interval=30s --timeout=5s CMD curl -sf http://localhost:8480/healthz || exit 1
 CMD ["npx", "tsx", "src/server.ts"]

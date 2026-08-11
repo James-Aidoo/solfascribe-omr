@@ -6,7 +6,7 @@
  * retained, never logged beyond the in-memory manifest.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { convertScore, type OmrResult, type OmrRunOptions } from './audiveris.js';
 
@@ -46,6 +46,27 @@ export interface JobStoreOptions {
    *  slow worker, so an unbounded queue is a cheap disk-fill DoS (review note). A
    *  submission over the cap is refused — the route answers 429. */
   maxQueuedJobs?: number;
+}
+
+/**
+ * Remove every leftover per-job directory under the work root. The job manifest lives
+ * only in memory, so after a crash or restart anything still on disk is unreachable —
+ * an orphan that would otherwise outlive the "uploads are transient" promise (it
+ * matters most when the work root is a persistent volume). Call once at boot.
+ */
+export async function removeOrphanedWork(workRoot: string): Promise<number> {
+  let entries;
+  try {
+    entries = await readdir(workRoot, { withFileTypes: true });
+  } catch {
+    return 0; // no work root yet — nothing orphaned
+  }
+  let removedCount = 0;
+  for (const entry of entries) {
+    await rm(join(workRoot, entry.name), { recursive: true, force: true });
+    removedCount++;
+  }
+  return removedCount;
 }
 
 /** Thrown when the queue is full — the HTTP layer maps it to 429. */

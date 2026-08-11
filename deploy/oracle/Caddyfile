@@ -1,0 +1,16 @@
+# Caddy fronts the OMR service with automatic HTTPS (Let's Encrypt, HTTP-01).
+#
+# DNS requirement: OMR_DOMAIN (set in deploy/oracle/.env) must be a hostname whose
+# A record points at this VM's public IP, and ports 80 AND 443 must be reachable —
+# Let's Encrypt validates over port 80 before issuing the certificate. Reachable means
+# BOTH the Oracle VCN security list AND the instance's own iptables allow them
+# (setup.sh handles the instance side; the VCN side is console work — see DEPLOY.md).
+#
+# No domain? Use the sslip.io fallback: any name of the form <ip>.sslip.io resolves to
+# that IP with zero DNS setup, and HTTP-01 issuance works fine against it. Just set
+#   OMR_DOMAIN=203.0.113.7.sslip.io          (your VM's public IP, dots kept)
+# in .env — this Caddyfile needs no change.
+
+{$OMR_DOMAIN} {
+	reverse_proxy omr:8480
+}

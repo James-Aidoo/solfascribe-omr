@@ -1,0 +1,58 @@
+# Production compose for an Oracle Cloud Always-Free Ampere A1 VM (2 OCPU / 12 GB,
+# arm64, Ubuntu 24.04). The image is built ON the VM from this repo — CI publishes no
+# registry image, and a build-on-VM keeps the supply chain to "the repo you cloned".
+#
+# Memory arithmetic for the 12 GB box (why heap 6g and mem_limit 10g):
+#   OS + sshd + docker daemon        ~1.0 GB
+#   Caddy                            ~0.1 GB
+#   Node glue service (tsx)          ~0.2 GB
+#   Audiveris JVM heap               6.0 GB   (OMR_JAVA_MAX_HEAP below)
+#   JVM overhead (metaspace, GC,
+#     threads, code cache)           ~0.7 GB
+#   Tesseract/Leptonica natives
+#     (bytedeco, in-process, NOT
+#     counted by the JVM heap)       ~1.0 GB
+#   ------------------------------------------
+#   worst-case working set          ~9.0 GB  → mem_limit 10g caps a runaway below the
+#   VM ceiling and still leaves ~2 GB for the OS, Caddy, and page cache.
+#
+# Requires a .env file next to this compose file:  OMR_DOMAIN=omr.example.com
+# (or the sslip.io fallback — see Caddyfile and DEPLOY.md).
+
+services:
+  omr:
+    build: ../..
+    restart: unless-stopped
+    mem_limit: 10g
+    environment:
+      # One conversion at a time — the heap arithmetic above assumes exactly one JVM.
+      OMR_CONCURRENCY: 1
+      OMR_JAVA_MAX_HEAP: 6g
+      # Uploads live on a named volume (not the container layer); the service wipes
+      # orphans at boot and the TTL sweeper deletes finished jobs (default 15 min).
+      WORK_ROOT: /tmp/solfascribe-omr
+      # Tighten for production: set this to your web app's origin, e.g.
+      # CORS_ORIGIN: https://james-aidoo.github.io
+    volumes:
+      - job-work:/tmp/solfascribe-omr
+    # Not published on the host — only Caddy reaches it, on the compose network.
+    expose:
+      - "8480"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      OMR_DOMAIN: ${OMR_DOMAIN:?set OMR_DOMAIN in deploy/oracle/.env (see DEPLOY.md)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # Let's Encrypt certificates — must persist across restarts
+      - caddy-config:/config
+
+volumes:
+  job-work:
+  caddy-data:
+  caddy-config:

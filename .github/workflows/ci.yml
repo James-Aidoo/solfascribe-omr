@@ -23,3 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t solfascribe-omr .
+
+  # The same build on a NATIVE arm64 runner (free for public repos): the production
+  # target is an Oracle Ampere A1 VM (arm64, 2 OCPU / 12 GB — see deploy/oracle/), so
+  # every PR proves the image keeps building for that architecture. Build only, no push
+  # — the VM builds its own image from the repo.
+  docker-build-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t solfascribe-omr .

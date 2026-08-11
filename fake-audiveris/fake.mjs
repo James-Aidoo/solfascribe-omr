@@ -5,6 +5,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 const processArguments = process.argv.slice(2);
+// Echo the JVM-options env var the service sets for heap sizing, so the suite can
+// assert it actually reaches the spawned engine (the real start script reads it).
+if (process.env.AUDIVERIS_OPTS) {
+  console.log(`[fake] AUDIVERIS_OPTS=${process.env.AUDIVERIS_OPTS}`);
+}
 const outputIndex = processArguments.indexOf('-output');
 const outputDirectory = outputIndex >= 0 ? processArguments[outputIndex + 1] : '.';
 // One argv entry per sheet number, like the real service sends (int[] handler form).

@@ -1,9 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { JobStore, QueueFullError } from '../src/jobs';
+import { JobStore, QueueFullError, removeOrphanedWork } from '../src/jobs';
 
 const FAKE: readonly string[] = ['node', join(process.cwd(), 'fake-audiveris', 'fake.mjs')];
 
@@ -94,6 +94,25 @@ describe('JobStore — queue, results, and transient files', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(await store.sweepExpired()).toBe(1);
     expect(store.get(job.id)).toBeUndefined();
+  });
+
+  it('removeOrphanedWork clears leftover job directories at boot (the restart gap)', async () => {
+    const workRoot = await mkdtemp(join(tmpdir(), 'omr-jobs-'));
+    workRoots.push(workRoot);
+    // Two stranded job directories from a "previous run" — the in-memory manifest that
+    // knew about them is gone, so only a boot-time sweep can honour the privacy promise.
+    for (const orphanId of ['orphan-a', 'orphan-b']) {
+      await mkdir(join(workRoot, orphanId, 'out'), { recursive: true });
+      await writeFile(join(workRoot, orphanId, 'input.pdf'), 'stranded upload');
+    }
+    expect(await removeOrphanedWork(workRoot)).toBe(2);
+    expect(existsSync(join(workRoot, 'orphan-a'))).toBe(false);
+    expect(existsSync(join(workRoot, 'orphan-b'))).toBe(false);
+    expect(existsSync(workRoot)).toBe(true); // the root itself survives for new jobs
+  });
+
+  it('removeOrphanedWork on a missing work root is a quiet no-op', async () => {
+    expect(await removeOrphanedWork(join(tmpdir(), 'omr-never-created'))).toBe(0);
   });
 
   it('a failed conversion carries its failure class through the job', async () => {

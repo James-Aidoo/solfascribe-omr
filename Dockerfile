@@ -4,6 +4,16 @@
 # release tag; stage 2 is the slim runtime: JRE + Tesseract + Node for the glue service.
 # See NOTICE.md for the licence split (MIT glue, AGPL engine).
 
+# The image is multi-arch by construction (amd64 AND arm64 — the production target is
+# an arm64 Oracle Ampere A1 VM; CI proves the arm64 build on a native arm runner):
+#  - eclipse-temurin manifests publish both architectures.
+#  - Every apt package (tesseract, fontconfig, curl) is arch-native from Ubuntu's repos.
+#  - The NodeSource setup script detects the architecture and serves arm64 debs.
+#  - The Audiveris build is Java bytecode plus bytedeco tesseract/leptonica natives; its
+#    5.10.2 build.gradle deliberately bundles BOTH linux-x86_64 and linux-arm64 native
+#    classifiers on Linux, so the installDist output runs on either architecture
+#    regardless of which one built it. No URL or arch string below is hardcoded.
+
 # Audiveris 5.10.2 declares theMinJavaVersion 25 — a 21 JDK fails compileJava with
 # "invalid source release: 25".
 FROM eclipse-temurin:25-jdk AS audiveris-build
@@ -43,7 +53,11 @@ EXPOSE 8480
 # ("ubuntu" as of 24.04) — remove whoever holds the UID first.
 RUN existing="$(getent passwd 1000 | cut -d: -f1)" \
     && if [ -n "$existing" ]; then userdel -r "$existing"; fi \
-    && useradd --create-home --uid 1000 omr && chown -R omr /service
+    && useradd --create-home --uid 1000 omr && chown -R omr /service \
+    # Pre-create the default WORK_ROOT owned by omr: a named volume mounted there
+    # (deploy/oracle) inherits this ownership on first use, so the non-root service
+    # can write its job directories.
+    && mkdir -p /tmp/solfascribe-omr && chown omr /tmp/solfascribe-omr
 USER omr
 HEALTHCHECK --interval=30s --timeout=5s CMD curl -sf http://localhost:8480/healthz || exit 1
 CMD ["npx", "tsx", "src/server.ts"]

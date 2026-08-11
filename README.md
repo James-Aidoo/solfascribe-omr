@@ -44,8 +44,10 @@ Built as the conversion companion of [SolfaScribe](https://github.com/James-Aido
 ## Privacy
 
 Uploads are **transient by design**: a job's files live only until the client deletes the
-job or the TTL sweeper does (default 15 minutes). Nothing is retained, logged beyond an
-in-memory manifest, or sent anywhere else. If you host this for others, say the same to
+job or the TTL sweeper does (default 15 minutes), and the service wipes any orphaned job
+files at boot (after a crash or restart, files whose in-memory manifest is gone would
+otherwise linger unreachable). Nothing is retained, logged beyond an in-memory manifest,
+or sent anywhere else. If you host this for others, say the same to
 your users — the scores are theirs.
 
 ## Running
@@ -65,7 +67,9 @@ AUDIVERIS_CMD="/path/to/Audiveris" npm start
 Configuration (environment): `AUDIVERIS_CMD`, `PORT` (8480), `OMR_TIMEOUT_MS` (10 min),
 `JOB_TTL_MS` (15 min), `WORK_ROOT`, `CORS_ORIGIN` (`*`), `MAX_UPLOAD_MB` (40),
 `OMR_CONCURRENCY` (1 — OMR is memory-hungry; raise it only with the RAM to match),
-`MAX_QUEUED_JOBS` (25 — a full queue answers 429).
+`MAX_QUEUED_JOBS` (25 — a full queue answers 429), `OMR_JAVA_MAX_HEAP` (unset — caps the
+engine JVM's heap, e.g. `6g`; Audiveris 5.10.2's own start script bakes in `-Xmx8g`,
+oversized for hosts under 16 GB).
 
 **Deploying publicly?** The service itself enforces upload size, a queue cap, transient
 files, and manifest-only file serving — but it ships with no authentication and
@@ -95,6 +99,18 @@ the next request.
 
 A free public Space is exactly that — public. The queue and upload caps bound abuse,
 but treat it as a development instance, not production.
+
+## Deploying
+
+Two documented paths, both free:
+
+- **Dev**: a Hugging Face Docker Space — the section just above. Sleeps when idle,
+  wakes on request; fine for trying things, not for serving users.
+- **Production**: an Oracle Cloud Always-Free Ampere A1 VM (2 OCPU / 12 GB, arm64)
+  behind Caddy with automatic HTTPS — the whole bundle (compose file, Caddyfile,
+  idempotent `setup.sh`, and an honest step-by-step including Oracle's signup and
+  capacity friction) lives in [`deploy/oracle/`](./deploy/oracle/DEPLOY.md). CI builds
+  the image on a native arm64 runner so every PR proves that target keeps working.
 
 ## Development
 

@@ -2,7 +2,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { brokenSheetsOf, convertScore, totalSheetsOf, type OmrRunOptions } from '../src/audiveris';
+import {
+  brokenSheetsOf,
+  convertScore,
+  totalSheetsOf,
+  validateJavaMaxHeap,
+  type OmrRunOptions,
+} from '../src/audiveris';
 
 const FAKE: readonly string[] = ['node', join(process.cwd(), 'fake-audiveris', 'fake.mjs')];
 const options = (timeoutMs = 30_000): OmrRunOptions => ({ audiverisCommand: FAKE, timeoutMs });
@@ -68,6 +74,35 @@ describe('convertScore — the corpus-taught contract', () => {
     const result = await convertScore(inputPath, outDirectory, options(500));
     expect(result.status).toBe('failed');
     expect(result.failure?.class).toBe('timeout');
+  });
+});
+
+describe('JVM heap sizing — the OMR_JAVA_MAX_HEAP knob', () => {
+  it('a configured heap reaches the engine process as AUDIVERIS_OPTS (the fake echoes it)', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('ok');
+    const result = await convertScore(inputPath, outDirectory, {
+      ...options(),
+      javaMaxHeap: '6g',
+    });
+    expect(result.status).toBe('done');
+    expect(result.logTail).toContain('AUDIVERIS_OPTS=-Xmx6g');
+  });
+
+  it('no configured heap means no AUDIVERIS_OPTS override — the engine default stands', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('ok');
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.status).toBe('done');
+    expect(result.logTail).not.toContain('AUDIVERIS_OPTS=');
+  });
+
+  it('validateJavaMaxHeap accepts -Xmx grammar and rejects everything else, loudly', () => {
+    expect(validateJavaMaxHeap('6g')).toBe('6g');
+    expect(validateJavaMaxHeap('4096m')).toBe('4096m');
+    expect(validateJavaMaxHeap('512K')).toBe('512K');
+    expect(validateJavaMaxHeap('8589934592')).toBe('8589934592'); // bare bytes are legal
+    for (const bad of ['', '6 g', '-Xmx6g', '6gb', 'lots', '1.5g']) {
+      expect(() => validateJavaMaxHeap(bad)).toThrow(/OMR_JAVA_MAX_HEAP/);
+    }
   });
 });
 

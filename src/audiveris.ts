@@ -23,6 +23,23 @@ export interface OmrRunOptions {
   audiverisCommand: readonly string[];
   /** Kill the OMR run after this long — scans of dense books can hang. */
   timeoutMs: number;
+  /** JVM max heap for the engine run, in `-Xmx` syntax (`6g`, `4096m`). Unset keeps the
+   *  engine's own default — Audiveris 5.10.2 bakes `-Xmx8g` into its start script,
+   *  which is fine on a ≥16 GB host but oversized for smaller boxes. */
+  javaMaxHeap?: string;
+}
+
+/** The `-Xmx` value grammar: digits plus an optional k/m/g unit. Validated at startup so
+ *  a typo fails the boot loudly instead of failing every conversion quietly. */
+const JAVA_HEAP_PATTERN = /^\d+[kKmMgG]?$/;
+
+export function validateJavaMaxHeap(value: string): string {
+  if (!JAVA_HEAP_PATTERN.test(value)) {
+    throw new Error(
+      `OMR_JAVA_MAX_HEAP must be digits with an optional k/m/g unit (like "6g" or "4096m"), got "${value}".`,
+    );
+  }
+  return value;
 }
 
 export interface MovementFile {
@@ -71,11 +88,13 @@ function runProcess(
   command: readonly string[],
   processArguments: readonly string[],
   timeoutMs: number,
+  environmentOverrides?: NodeJS.ProcessEnv,
 ): Promise<ProcessOutcome> {
   return new Promise((resolve) => {
     const [executable, ...leadingArguments] = command;
     const child = spawn(executable!, [...leadingArguments, ...processArguments], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: environmentOverrides ? { ...process.env, ...environmentOverrides } : undefined,
     });
     let log = '';
     let timedOut = false;
@@ -181,10 +200,18 @@ async function runOnce(
   // where a single space-joined token depends on the handler splitting it (review note).
   const sheetArguments =
     sheets && sheets.length > 0 ? ['-sheets', ...sheets.map(String)] : [];
+  // The Gradle-generated Audiveris start script assembles the java command line as
+  // `$DEFAULT_JVM_OPTS $JAVA_OPTS $AUDIVERIS_OPTS`, and HotSpot lets the LAST -Xmx win —
+  // so AUDIVERIS_OPTS reliably overrides the -Xmx8g baked into 5.10.2's DEFAULT_JVM_OPTS.
+  // (JAVA_TOOL_OPTIONS would NOT work: the JVM prepends it, so the baked 8g would win.)
+  const environmentOverrides = options.javaMaxHeap
+    ? { AUDIVERIS_OPTS: `-Xmx${options.javaMaxHeap}` }
+    : undefined;
   const outcome = await runProcess(
     options.audiverisCommand,
     ['-batch', '-export', ...sheetArguments, '-output', outputDirectory, inputPath],
     options.timeoutMs,
+    environmentOverrides,
   );
   return { outcome, movements: await collectMovements(outputDirectory) };
 }

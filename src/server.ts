@@ -8,7 +8,8 @@
  *   DELETE /jobs/:id             → remove the job and its files immediately
  *
  * Configuration is environment-only (12-factor): AUDIVERIS_CMD, PORT, OMR_TIMEOUT_MS,
- * JOB_TTL_MS, WORK_ROOT, CORS_ORIGIN, MAX_UPLOAD_MB, OMR_CONCURRENCY.
+ * JOB_TTL_MS, WORK_ROOT, CORS_ORIGIN, MAX_UPLOAD_MB, OMR_CONCURRENCY,
+ * OMR_JAVA_MAX_HEAP, MAX_QUEUED_JOBS.
  */
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
@@ -17,7 +18,8 @@ import { createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { JobStore, QueueFullError } from './jobs.js';
+import { validateJavaMaxHeap } from './audiveris.js';
+import { JobStore, QueueFullError, removeOrphanedWork } from './jobs.js';
 
 const environment = process.env;
 const configuration = {
@@ -34,6 +36,12 @@ const configuration = {
   maxUploadBytes: Number(environment.MAX_UPLOAD_MB ?? 40) * 1024 * 1024,
   concurrency: Number(environment.OMR_CONCURRENCY ?? 1),
   maxQueuedJobs: Number(environment.MAX_QUEUED_JOBS ?? 25),
+  // JVM max heap for the Audiveris run ("6g", "4096m"). Unset keeps the engine default
+  // (5.10.2 bakes -Xmx8g into its start script — fine on a ≥16 GB host, oversized for
+  // smaller boxes; the 12 GB Oracle deploy sets 6g — see deploy/oracle/docker-compose.yml).
+  javaMaxHeap: environment.OMR_JAVA_MAX_HEAP
+    ? validateJavaMaxHeap(environment.OMR_JAVA_MAX_HEAP)
+    : undefined,
 };
 
 export function buildServer(store: JobStore) {
@@ -91,14 +99,22 @@ export function buildServer(store: JobStore) {
   return server;
 }
 
-/** Entry point: build the store, start the sweeper, listen. */
+/** Entry point: clear orphans, build the store, start the sweeper, listen. */
 async function main() {
+  // The manifest is in-memory, so any files left in the work root by a previous run
+  // (crash, restart) are unreachable — remove them before accepting work, or they'd
+  // outlive the transient-files promise on a persistent volume.
+  await removeOrphanedWork(configuration.workRoot);
   const store = new JobStore({
     workRoot: configuration.workRoot,
     jobTtlMs: configuration.jobTtlMs,
     concurrency: configuration.concurrency,
     maxQueuedJobs: configuration.maxQueuedJobs,
-    omr: { audiverisCommand: configuration.audiverisCommand, timeoutMs: configuration.timeoutMs },
+    omr: {
+      audiverisCommand: configuration.audiverisCommand,
+      timeoutMs: configuration.timeoutMs,
+      javaMaxHeap: configuration.javaMaxHeap,
+    },
   });
   setInterval(() => void store.sweepExpired(), 60 * 1000).unref();
   const server = buildServer(store);

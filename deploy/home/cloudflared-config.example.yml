@@ -1,0 +1,8 @@
+# Named-tunnel config for HOME hosting (deploy/home/README.md). Copy beside your tunnel
+# credentials (usually %USERPROFILE%\.cloudflared\config.yml) and fill in the tunnel id.
+tunnel: <TUNNEL_ID>
+credentials-file: C:\Users\<you>\.cloudflared\<TUNNEL_ID>.json
+ingress:
+  - hostname: omr.<your-domain>
+    service: http://localhost:8480
+  - service: http_status:404

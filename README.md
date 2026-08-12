@@ -76,36 +76,23 @@ files, and manifest-only file serving — but it ships with no authentication an
 `CORS_ORIGIN=*`. Front it with your own auth/rate limiting, set `CORS_ORIGIN` to your
 app's origin, and size the work-root disk for `MAX_QUEUED_JOBS × MAX_UPLOAD_MB`.
 
-### Free dev instance: Hugging Face Spaces
+### Hugging Face Spaces (now PRO-only)
 
-The repo is ready to run as a **Docker Space** (the YAML block at the top of this file
-is the Space metadata; the container user is UID 1000 as Spaces requires). The free CPU
-tier (2 vCPU / 16 GB) is enough for real scores; the Space sleeps when idle and wakes on
-the next request.
-
-1. Create a free account at huggingface.co, then **New Space** → SDK **Docker** →
-   hardware **CPU basic (free)** → visibility Public.
-2. Push this repo to the Space (it builds the Dockerfile there — takes ~15 min the
-   first time):
-
-   ```bash
-   git remote add space https://huggingface.co/spaces/<your-username>/solfascribe-omr
-   git push space main
-   ```
-
-   (Authenticate with a Hugging Face access token as the password.)
-3. The service answers at `https://<your-username>-solfascribe-omr.hf.space` —
-   check `/healthz`.
-
-A free public Space is exactly that — public. The queue and upload caps bound abuse,
-but treat it as a development instance, not production.
+The repo still runs as a **Docker Space** (the YAML block at the top of this file is the
+Space metadata; the container user is UID 1000 as Spaces requires) — but as of mid-2026
+Docker Spaces **require a paid Hugging Face plan**; the free CPU tier this section was
+written for no longer exists. If you have PRO: New Space → SDK Docker → push this repo →
+the service answers at `https://<user>-solfascribe-omr.hf.space`. Without it, use the
+free **home-hosting path** below.
 
 ## Deploying
 
 Two documented paths, both free:
 
-- **Dev**: a Hugging Face Docker Space — the section just above. Sleeps when idle,
-  wakes on request; fine for trying things, not for serving users.
+- **Dev / pilot (free, no card)**: run it on your own machine behind a Cloudflare named
+  tunnel — [`deploy/home/`](./deploy/home/README.md). Up when the machine is; the right
+  trade while the operator is also the main user. (Hugging Face Docker Spaces, the old
+  free dev path, went PRO-only in mid-2026 — the section above.)
 - **Production**: an Oracle Cloud Always-Free Ampere A1 VM (2 OCPU / 12 GB, arm64)
   behind Caddy with automatic HTTPS — the whole bundle (compose file, Caddyfile,
   idempotent `setup.sh`, and an honest step-by-step including Oracle's signup and

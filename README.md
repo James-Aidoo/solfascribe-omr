@@ -74,8 +74,9 @@ npm install
 AUDIVERIS_CMD="/path/to/Audiveris" npm start
 ```
 
-Configuration (environment): `AUDIVERIS_CMD`, `PORT` (8480), `OMR_TIMEOUT_MS` (10 min),
-`JOB_TTL_MS` (15 min), `WORK_ROOT`, `CORS_ORIGIN` (`*`), `MAX_UPLOAD_MB` (40),
+Configuration (environment): `AUDIVERIS_CMD`, `PORT` (8480), `OMR_TIMEOUT_MS` (15 min —
+sized for the tuned 400-DPI rasterization, which runs ~40-70% longer than the old 300),
+`JOB_TTL_MS` (20 min), `WORK_ROOT`, `CORS_ORIGIN` (`*`), `MAX_UPLOAD_MB` (40),
 `OMR_CONCURRENCY` (1 — OMR is memory-hungry; raise it only with the RAM to match),
 `MAX_QUEUED_JOBS` (25 — a full queue answers 429), `OMR_JAVA_MAX_HEAP` (unset — caps the
 engine JVM's heap, e.g. `6g`; Audiveris 5.10.2's own start script bakes in `-Xmx8g`,

@@ -188,6 +188,32 @@ function classifyFailure(log: string, timedOut: boolean): { class: OmrFailureCla
   return { class: 'omr-failed', detail: 'Audiveris produced no output — see the log tail.' };
 }
 
+/**
+ * Tuned engine constants, passed as `-constant KEY=VALUE` pairs (the only tuning
+ * surface Audiveris 5.10.2 exposes in batch; CLI constants are NOT persisted in
+ * batch mode, so every run stays reproducible).
+ *
+ * `pdfResolution=400`: raise PDF rasterization from the default 300 DPI to 400 —
+ * the engine's own guidance for scores with small symbols, and the ONE option that
+ * measurably won an A/B sweep over this corpus (2026-08-14, two real scores,
+ * 7 single-option arms + combined; see SolfaScribe agentWorkingDirectory/
+ * audiveris-tuning/): bar-length defects 13→4 and 27→25, engine diagnostics
+ * 34→23 and 49→42, source voice rows 8→6 on the closed-score sample, lyric
+ * syllables 664→707 with stranded plain-text words 1→0 on the open-score sample.
+ * Cost: ~40–70% longer runs, still within a 2g heap. Only affects PDF inputs;
+ * plain image inputs ignore it.
+ *
+ * Measured and rejected, for the record: `ProcessingSwitches.lyricsAboveStaff`
+ * (rescued a few stranded lyric lines on one score but doubled voice rows and
+ * +10 bar-length defects on the other), `implicitTuplets` (+6 bar-length),
+ * `bothSharedHeadDots` (+1 bar-length), GLOBAL binarization and
+ * `Profiles.defaultQuality=Poor` (both byte-identical no-ops on this corpus).
+ */
+const TUNED_ENGINE_CONSTANTS = [
+  '-constant',
+  'org.audiveris.omr.image.ImageLoading.pdfResolution=400',
+] as const;
+
 /** One Audiveris pass over the input; `sheets` restricts which pages are processed. */
 async function runOnce(
   inputPath: string,
@@ -209,7 +235,7 @@ async function runOnce(
     : undefined;
   const outcome = await runProcess(
     options.audiverisCommand,
-    ['-batch', '-export', ...sheetArguments, '-output', outputDirectory, inputPath],
+    ['-batch', '-export', ...TUNED_ENGINE_CONSTANTS, ...sheetArguments, '-output', outputDirectory, inputPath],
     options.timeoutMs,
     environmentOverrides,
   );

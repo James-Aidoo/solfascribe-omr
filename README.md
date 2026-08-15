@@ -31,6 +31,16 @@ Built as the conversion companion of [SolfaScribe](https://github.com/James-Aido
 - **Honest failure classes.** `rhythm-analysis-abort` (Audiveris's own rhythm step gave
   up — no retry can help), `unreadable-input`, `timeout`, `omr-failed` — each with a log
   tail for diagnosis.
+- **A measured, minimal tuned invocation.** Every run passes
+  `-constant org.audiveris.omr.image.ImageLoading.pdfResolution=400` (PDF rasterization
+  at 400 DPI instead of Audiveris's default 300 — the engine's own recommendation for
+  small symbols). It was the single winner of an A/B sweep over real corpus scores
+  (2026-08-14): bar-length misreads down (13→4 on one score, 27→25 on the other), fewer
+  downstream diagnostics, more lyrics attached to notes, at the cost of ~40–70% longer
+  runs. Six other candidate options (lyrics-above-staff, implicit tuplets, shared-head
+  dots, global binarization, poor-input profile, explicit OCR language) measured neutral
+  or worse and are deliberately NOT set — the rationale lives with the constant in
+  `src/audiveris.ts`.
 
 ## API
 

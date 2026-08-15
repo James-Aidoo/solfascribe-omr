@@ -31,6 +31,16 @@ Built as the conversion companion of [SolfaScribe](https://github.com/James-Aido
 - **Honest failure classes.** `rhythm-analysis-abort` (Audiveris's own rhythm step gave
   up — no retry can help), `unreadable-input`, `timeout`, `omr-failed` — each with a log
   tail for diagnosis.
+- **A measured, minimal tuned invocation.** Every run passes
+  `-constant org.audiveris.omr.image.ImageLoading.pdfResolution=400` (PDF rasterization
+  at 400 DPI instead of Audiveris's default 300 — the engine's own recommendation for
+  small symbols). It was the single winner of an A/B sweep over real corpus scores
+  (2026-08-14): bar-length misreads down (13→4 on one score, 27→25 on the other), fewer
+  downstream diagnostics, more lyrics attached to notes, at the cost of ~40–70% longer
+  runs. Six other candidate options (lyrics-above-staff, implicit tuplets, shared-head
+  dots, global binarization, poor-input profile, explicit OCR language) measured neutral
+  or worse and are deliberately NOT set — the rationale lives with the constant in
+  `src/audiveris.ts`.
 
 ## API
 
@@ -64,8 +74,9 @@ npm install
 AUDIVERIS_CMD="/path/to/Audiveris" npm start
 ```
 
-Configuration (environment): `AUDIVERIS_CMD`, `PORT` (8480), `OMR_TIMEOUT_MS` (10 min),
-`JOB_TTL_MS` (15 min), `WORK_ROOT`, `CORS_ORIGIN` (`*`), `MAX_UPLOAD_MB` (40),
+Configuration (environment): `AUDIVERIS_CMD`, `PORT` (8480), `OMR_TIMEOUT_MS` (15 min —
+sized for the tuned 400-DPI rasterization, which runs ~40-70% longer than the old 300),
+`JOB_TTL_MS` (20 min), `WORK_ROOT`, `CORS_ORIGIN` (`*`), `MAX_UPLOAD_MB` (40),
 `OMR_CONCURRENCY` (1 — OMR is memory-hungry; raise it only with the RAM to match),
 `MAX_QUEUED_JOBS` (25 — a full queue answers 429), `OMR_JAVA_MAX_HEAP` (unset — caps the
 engine JVM's heap, e.g. `6g`; Audiveris 5.10.2's own start script bakes in `-Xmx8g`,

@@ -29,8 +29,10 @@ const configuration = {
   // must `exec` the real binary, or a timeout SIGKILL lands on the shim and orphans
   // the JVM; note Node ≥ 22 refuses to spawn .bat/.cmd directly).
   audiverisCommand: (environment.AUDIVERIS_CMD ?? 'audiveris').split(' '),
-  timeoutMs: Number(environment.OMR_TIMEOUT_MS ?? 10 * 60 * 1000),
-  jobTtlMs: Number(environment.JOB_TTL_MS ?? 15 * 60 * 1000),
+  // 15 min (was 10): the tuned 400-DPI rasterization makes runs ~40-70% longer, so a
+  // score that used to finish in 7 minutes would newly time out at the old default.
+  timeoutMs: Number(environment.OMR_TIMEOUT_MS ?? 15 * 60 * 1000),
+  jobTtlMs: Number(environment.JOB_TTL_MS ?? 20 * 60 * 1000),
   workRoot: environment.WORK_ROOT ?? join(tmpdir(), 'solfascribe-omr'),
   corsOrigin: environment.CORS_ORIGIN ?? '*',
   maxUploadBytes: Number(environment.MAX_UPLOAD_MB ?? 40) * 1024 * 1024,

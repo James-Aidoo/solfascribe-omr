@@ -96,6 +96,24 @@ describe('JobStore — queue, results, and transient files', () => {
     expect(store.get(job.id)).toBeUndefined();
   });
 
+  it('the collection window opens at FINISH, not at creation — a long run cannot eat it', async () => {
+    // A conversion as long as the TTL itself used to leave a zero-width window: the sweep
+    // measured from createdAt, so the result could be deleted the moment it appeared
+    // (owner incident 2026-08-18 — a reconnecting client needs the full window).
+    const store = await makeStore(60_000);
+    const job = await store.submit('ok.pdf', Buffer.from('ok\n(fake score)'));
+    await waitForFinish(store, job.id);
+    const finished = store.get(job.id)!;
+    expect(finished.finishedAt).not.toBeNull();
+    // Pretend the job was CREATED ages ago but finished just now: it must survive.
+    finished.createdAt = Date.now() - 10 * 60_000;
+    expect(await store.sweepExpired()).toBe(0);
+    expect(store.get(job.id)).toBeDefined();
+    // Once the FINISH is older than the TTL, it goes.
+    finished.finishedAt = Date.now() - 2 * 60_000;
+    expect(await store.sweepExpired()).toBe(1);
+  });
+
   it('removeOrphanedWork clears leftover job directories at boot (the restart gap)', async () => {
     const workRoot = await mkdtemp(join(tmpdir(), 'omr-jobs-'));
     workRoots.push(workRoot);

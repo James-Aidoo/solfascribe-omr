@@ -23,6 +23,12 @@ export interface Job {
   createdAt: number;
   result?: OmrResult;
   workDirectory: string;
+  /** When the conversion ENDED (done or failed) — null while queued/running. The TTL runs
+   *  from here, not from creation: a job's collection window must not be eaten by its own
+   *  conversion time (a 15-minute run against a 20-minute creation-anchored TTL left five
+   *  minutes to collect — and a client that reconnects after a network drop needs the full
+   *  window; owner incident 2026-08-18). */
+  finishedAt: number | null;
 }
 
 /** A filesystem-safe version of the upload's name — path separators, whitespace,
@@ -100,6 +106,7 @@ export class JobStore {
       inputFilename,
       status: 'queued',
       createdAt: Date.now(),
+      finishedAt: null,
       workDirectory,
     };
     this.jobs.set(id, job);
@@ -133,12 +140,14 @@ export class JobStore {
     return true;
   }
 
-  /** Delete every finished job older than the TTL. Call periodically. */
+  /** Delete every finished job whose COLLECTION WINDOW has passed. The window opens when
+   *  the conversion ends (`finishedAt`), so a long run can never eat its own window. Call
+   *  periodically. */
   async sweepExpired(now = Date.now()): Promise<number> {
     let sweptCount = 0;
     for (const job of [...this.jobs.values()]) {
       const finished = job.status === 'done' || job.status === 'failed';
-      if (finished && now - job.createdAt > this.options.jobTtlMs) {
+      if (finished && now - (job.finishedAt ?? job.createdAt) > this.options.jobTtlMs) {
         await this.delete(job.id);
         sweptCount++;
       }
@@ -170,6 +179,7 @@ export class JobStore {
       );
       job.result = result;
       job.status = result.status;
+      job.finishedAt = Date.now();
     } catch (error) {
       job.result = {
         status: 'failed',
@@ -178,6 +188,7 @@ export class JobStore {
         logTail: '',
       };
       job.status = 'failed';
+      job.finishedAt = Date.now();
     }
   }
 }

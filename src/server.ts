@@ -21,6 +21,21 @@ import { pathToFileURL } from 'node:url';
 import { validateJavaMaxHeap } from './audiveris.js';
 import { JobStore, QueueFullError, removeOrphanedWork } from './jobs.js';
 
+/** CORS_ORIGIN is comma-separated — the app lives on more than one origin (production +
+ *  the `next` staging preview). Found the hard way (2026-08-29): a scan from staging
+ *  uploaded fine (multipart POST needs no preflight), the service accepted and RAN the
+ *  job, and the browser then discarded the 202 because the single allowed origin did not
+ *  match — "Failed to fetch" for the reader, an orphaned queued job per retry for the
+ *  host. Unset stays '*' (local dev). */
+export function corsOriginsOf(rawOrigins: string | undefined): string | string[] {
+  if (!rawOrigins) return '*';
+  const origins = rawOrigins
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin !== '');
+  return origins.length === 1 ? origins[0]! : origins;
+}
+
 const environment = process.env;
 const configuration = {
   port: Number(environment.PORT ?? 8480),
@@ -34,7 +49,7 @@ const configuration = {
   timeoutMs: Number(environment.OMR_TIMEOUT_MS ?? 15 * 60 * 1000),
   jobTtlMs: Number(environment.JOB_TTL_MS ?? 20 * 60 * 1000),
   workRoot: environment.WORK_ROOT ?? join(tmpdir(), 'solfascribe-omr'),
-  corsOrigin: environment.CORS_ORIGIN ?? '*',
+  corsOrigin: corsOriginsOf(environment.CORS_ORIGIN),
   maxUploadBytes: Number(environment.MAX_UPLOAD_MB ?? 40) * 1024 * 1024,
   concurrency: Number(environment.OMR_CONCURRENCY ?? 1),
   maxQueuedJobs: Number(environment.MAX_QUEUED_JOBS ?? 25),

@@ -1,0 +1,132 @@
+/**
+ * What the service will hand to the engine, decided BEFORE anything is spawned
+ * (security review 2026-09-15). Audiveris opens far more than PDFs — `.omr` books
+ * (zip + XML unmarshalling) and every ImageIO format — and it runs native decoders, so
+ * the input surface is narrowed to the score formats a client legitimately sends, each
+ * checked by its leading bytes and not only its name. Pure functions, pinned.
+ */
+import { basename, extname } from 'node:path';
+
+/** The extensions a score may arrive under. */
+export const ALLOWED_INPUT_EXTENSIONS = ['pdf', 'png', 'jpg', 'jpeg', 'tif', 'tiff'] as const;
+export type InputExtension = (typeof ALLOWED_INPUT_EXTENSIONS)[number];
+
+/** How many leading bytes the sniff needs. */
+export const MAGIC_BYTE_COUNT = 8;
+
+export type InputRefusal =
+  | 'unsupported-extension'
+  | 'content-does-not-match-extension'
+  | 'too-many-pages';
+
+export type InputInspection =
+  | { ok: true; extension: InputExtension }
+  | { ok: false; reason: InputRefusal; message: string };
+
+const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
+const TIFF_LITTLE_ENDIAN_MAGIC = Buffer.from([0x49, 0x49, 0x2a, 0x00]);
+const TIFF_BIG_ENDIAN_MAGIC = Buffer.from([0x4d, 0x4d, 0x00, 0x2a]);
+
+function startsWith(bytes: Uint8Array, magic: Buffer): boolean {
+  return bytes.length >= magic.length && Buffer.from(bytes.subarray(0, magic.length)).equals(magic);
+}
+
+/** The extension the leading bytes actually belong to, or null for anything else. */
+export function extensionFamilyOfMagic(leadingBytes: Uint8Array): 'pdf' | 'png' | 'jpg' | 'tif' | null {
+  if (startsWith(leadingBytes, PDF_MAGIC)) return 'pdf';
+  if (startsWith(leadingBytes, PNG_MAGIC)) return 'png';
+  if (startsWith(leadingBytes, JPEG_MAGIC)) return 'jpg';
+  if (startsWith(leadingBytes, TIFF_LITTLE_ENDIAN_MAGIC) || startsWith(leadingBytes, TIFF_BIG_ENDIAN_MAGIC)) {
+    return 'tif';
+  }
+  return null;
+}
+
+function familyOfExtension(extension: InputExtension): 'pdf' | 'png' | 'jpg' | 'tif' {
+  if (extension === 'jpeg') return 'jpg';
+  if (extension === 'tiff') return 'tif';
+  return extension;
+}
+
+/** The upload's extension, lower-cased, when it is one the service accepts. */
+export function allowedExtensionOf(filename: string): InputExtension | null {
+  const extension = extname(filename).replace(/^\./, '').toLowerCase();
+  return (ALLOWED_INPUT_EXTENSIONS as readonly string[]).includes(extension)
+    ? (extension as InputExtension)
+    : null;
+}
+
+/** Decide whether an upload may reach the engine: an allowed extension whose leading
+ *  bytes are that format's. The message is written for the person who uploaded it. */
+export function inspectInput(filename: string, leadingBytes: Uint8Array): InputInspection {
+  const extension = allowedExtensionOf(filename);
+  if (extension === null) {
+    return {
+      ok: false,
+      reason: 'unsupported-extension',
+      message: `"${basename(filename)}" is not a score format this service reads — send a PDF, PNG, JPEG or TIFF.`,
+    };
+  }
+  if (extensionFamilyOfMagic(leadingBytes) !== familyOfExtension(extension)) {
+    return {
+      ok: false,
+      reason: 'content-does-not-match-extension',
+      message: `"${basename(filename)}" does not contain what its name says it is.`,
+    };
+  }
+  return { ok: true, extension };
+}
+
+/**
+ * A cheap page count for a PDF — the `/Type /Page` objects, which every page carries
+ * (a `/Pages` node is the tree, not a page, and is excluded). Approximate on purpose:
+ * pages hidden in compressed object streams are not seen, which only ever UNDER-counts.
+ * The cap this feeds is a guard against a 500-page book rasterized at 400 DPI on a home
+ * machine, not a security boundary.
+ */
+export function pdfPageCountOf(bytes: Uint8Array): number {
+  const text = Buffer.from(bytes).toString('latin1');
+  return (text.match(/\/Type\s*\/Page(?![s])/g) ?? []).length;
+}
+
+/** Windows resolves these names to devices in ANY directory — `PRN.pdf` included. */
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+/**
+ * A filesystem-safe version of the upload's name — path separators, whitespace,
+ * shell-hostile characters, and control characters become underscores; the extension is
+ * REPLACED by the one the content proved (a `.PDF` stays a pdf, a `.jpeg` stays jpeg).
+ * A degenerate or reserved name falls back to `score.<extension>`. Audiveris names its
+ * outputs after the input file, which is why the name is kept at all.
+ */
+export function safeInputFilenameOf(originalName: string, extension: InputExtension): string {
+  // The last path segment by hand: Node's basename reads `a:` as a Windows drive and
+  // would drop it, and an upload's name is not a path this machine ever resolved.
+  // The control range is written as ESCAPES on purpose: a literal control byte in this
+  // class once slipped in unseen and turned the whole file binary for git.
+  const lastSegment = originalName.split(/[\\/]/).pop() ?? '';
+  const stem = lastSegment.replace(/\.[^.]*$/, '');
+  const cleaned = stem.replace(/[\\/:*?"<>|\s\u0000-\u001f-]+/g, '_').replace(/^[._]+|[._]+$/g, '');
+  if (cleaned === '' || WINDOWS_RESERVED_NAME.test(cleaned)) return `score.${extension}`;
+  return `${cleaned}.${extension}`;
+}
+
+/**
+ * Strip the machine's own layout from text that leaves the service — the engine's log
+ * prints the absolute input path, Node's fs errors print absolute paths, and the failure
+ * detail once carried both (an installed user name, the temp directory, the engine's
+ * install path). Each root is replaced whichever slash direction it appears with.
+ */
+export function redactPaths(text: string, roots: readonly string[]): string {
+  let redacted = text;
+  for (const root of roots) {
+    if (!root) continue;
+    for (const variant of new Set([root, root.replace(/\\/g, '/'), root.replace(/\//g, '\\')])) {
+      if (variant.length < 3) continue;
+      redacted = redacted.split(variant).join('<redacted>');
+    }
+  }
+  return redacted;
+}

@@ -2,7 +2,7 @@
 # directory into the environment, then runs the service in the foreground. Pair it with the
 # cloudflared tunnel (its own scheduled task) to serve omr.<your-domain>.
 #
-# The service's own retention discipline (15-minute job TTL + the boot orphan wipe) is what
+# The service's own retention discipline (20-minute job TTL + the boot orphan wipe) is what
 # keeps the home machine clean — uploads live only for the job's lifetime.
 $ErrorActionPreference = 'Stop'
 $homeDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path

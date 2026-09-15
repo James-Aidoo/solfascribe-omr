@@ -55,6 +55,46 @@ switch (effectiveScenario) {
   case 'rhythms':
     console.log('Voice excess 1/8 at measure 12 — no correct rhythm could be found');
     break;
+  case 'rhythms-noisy':
+    // A real 5.10.2 run logs exception NAMES as WARN noise and carries on (the
+    // Love-is-a-Verb tuning log): the rhythm abort underneath must still win.
+    console.log('WARN [book] PartwiseBuilder.java:3244 | Error visiting System#2 in {Page#1.2}');
+    console.log(
+      'java.lang.NullPointerException: Cannot invoke "org.audiveris.omr.sheet.Part.getFirstMeasure()" because "refPart" is null',
+    );
+    console.log('\tat org.audiveris.omr.sheet.Part.createDummyPart(Part.java:359)');
+    console.log('Voice excess 1/8 at measure 12 — no correct rhythm could be found');
+    break;
+  case 'rhythms-then-fatal':
+    // A rhythm abort followed by a fatal-looking line: the specific class still wins over
+    // the crash branch, which must stay LAST.
+    console.log('Could not load the rest');
+    console.log('Voice excess 1/8 at measure 12 — no correct rhythm could be found');
+    console.log('Exception in thread "main" java.lang.IllegalStateException: after the abort');
+    break;
+  case 'unreadable-then-fatal':
+    console.log('Could not load input as a score');
+    console.log('Exception in thread "main" java.lang.IllegalStateException: after the refusal');
+    break;
+  case 'warn-noise-only':
+    // WARN-level exception names, no rhythm text, no output: not a crash — "produced no
+    // output" is the honest answer, and a bare exception name must not become one.
+    console.log('WARN [book] PartwiseBuilder.java:3244 | Error visiting System#2 in {Page#1.2}');
+    console.log('java.lang.NullPointerException: Cannot invoke "Part.getFirstMeasure()"');
+    break;
+  case 'rhythms-then-oom':
+    // Rhythm noise and then the heap dies: "fewer pages may work" is the useful answer,
+    // not "a retry cannot help" — heap exhaustion outranks the rhythm class.
+    console.log('Voice excess 1/8 at measure 12 — no correct rhythm could be found');
+    console.log('Exception in thread "main" java.lang.OutOfMemoryError: Java heap space');
+    break;
+  case 'oom':
+    console.log('Exception in thread "main" java.lang.OutOfMemoryError: Java heap space');
+    break;
+  case 'crash':
+    console.log('Exception in thread "main" java.lang.IllegalStateException: boom');
+    console.log('\tat org.audiveris.omr.Main.main(Main.java:263)');
+    break;
   case 'badsheet':
     console.log('Book badsheet has 3 sheets');
     if (sheets && !sheets.includes('2')) {
@@ -66,6 +106,19 @@ switch (effectiveScenario) {
   case 'slow':
     await new Promise((resolve) => setTimeout(resolve, 5000));
     break;
+  case 'slowtree': {
+    // A launcher that hands the real work to a child (the jpackage .exe over its JVM):
+    // the grandchild sleeps long, writes its pid next to the input so the suite can
+    // check the timeout kill reached it, and the "launcher" waits for it.
+    const { spawn } = await import('node:child_process');
+    const { writeFileSync: writePid } = await import('node:fs');
+    const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], {
+      stdio: 'ignore',
+    });
+    writePid(`${inputPath}.grandchild-pid`, String(grandchild.pid));
+    await new Promise((resolve) => grandchild.on('exit', resolve));
+    break;
+  }
   case 'garbage':
     console.log('Could not load input as a score');
     break;

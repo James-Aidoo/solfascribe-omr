@@ -45,7 +45,10 @@ COPY tsconfig.json ./
 
 ENV AUDIVERIS_CMD=/opt/audiveris/bin/Audiveris \
     PORT=8480 \
-    WORK_ROOT=/tmp/solfascribe-omr
+    WORK_ROOT=/tmp/solfascribe-omr \
+    # All interfaces INSIDE the container — the container is the boundary; the service's
+    # own default is 127.0.0.1 for a bare-metal host (security review 2026-09-15).
+    HOST=0.0.0.0
 EXPOSE 8480
 # Not root (review note): the service only needs its own files and WORK_ROOT.
 # UID 1000 specifically — Hugging Face Spaces runs Docker Spaces as that UID, so the

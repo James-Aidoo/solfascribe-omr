@@ -17,7 +17,8 @@
 #   VM ceiling and still leaves ~2 GB for the OS, Caddy, and page cache.
 #
 # Requires a .env file next to this compose file:  OMR_DOMAIN=omr.example.com
-# (or the sslip.io fallback — see Caddyfile and DEPLOY.md).
+# (or the sslip.io fallback — see Caddyfile and DEPLOY.md) and CORS_ORIGIN=<the web
+# app's origin(s), comma-separated> — the service refuses to start without the latter.
 
 services:
   omr:
@@ -29,10 +30,17 @@ services:
       OMR_CONCURRENCY: 1
       OMR_JAVA_MAX_HEAP: 6g
       # Uploads live on a named volume (not the container layer); the service wipes
-      # orphans at boot and the TTL sweeper deletes finished jobs (default 15 min).
+      # orphans at boot and the TTL sweeper deletes finished jobs (default 20 min).
       WORK_ROOT: /tmp/solfascribe-omr
-      # Tighten for production: set this to your web app's origin, e.g.
-      # CORS_ORIGIN: https://james-aidoo.github.io
+      # REQUIRED for a public deployment: the web app's origin(s), comma-separated.
+      # Unset in the service means `*`, which is a local-dev default, never a public one
+      # (security review 2026-09-15).
+      CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN in deploy/oracle/.env to your app's origin(s)}
+      # The engine's own log directory inside the container, swept after every run. The
+      # XDG path is what Audiveris uses on Linux by convention — ASSUMED, not verified on
+      # this image: after the first real run, `docker compose exec omr find /home/omr
+      # -name '*.log'` and correct this line if the files are elsewhere.
+      AUDIVERIS_LOG_DIR: /home/omr/.local/share/AudiverisLtd/audiveris/log
     volumes:
       - job-work:/tmp/solfascribe-omr
     # Not published on the host — only Caddy reaches it, on the compose network.

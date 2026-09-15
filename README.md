@@ -53,12 +53,17 @@ Built as the conversion companion of [SolfaScribe](https://github.com/James-Aido
 
 ## Privacy
 
-Uploads are **transient by design**: a job's files live only until the client deletes the
-job or the TTL sweeper does (default 15 minutes), and the service wipes any orphaned job
-files at boot (after a crash or restart, files whose in-memory manifest is gone would
-otherwise linger unreachable). Nothing is retained, logged beyond an in-memory manifest,
-or sent anywhere else. If you host this for others, say the same to
-your users — the scores are theirs.
+Uploads are **transient by design**: the uploaded file is deleted the moment its
+conversion ends; the outputs live only until the client deletes the job or the TTL sweeper
+does (default 20 minutes); the service wipes any orphaned job files at boot and sweeps
+directories no job owns on every pass. **Audiveris keeps its own per-run log** (holding the
+input path and OCR'd text) in its user data directory — set `AUDIVERIS_LOG_DIR` to that
+directory and the service deletes each run's log when the run ends; leave it unset and
+that log outlives every job, which you must then say in your privacy statement. Nothing
+else is retained, logged beyond an in-memory manifest, or sent anywhere. Failure details
+and log tails have the machine's own paths (work root, engine install, home directory)
+redacted before they leave the service. If you host this for others, say the same to your
+users — the scores are theirs.
 
 ## Running
 
@@ -74,18 +79,37 @@ npm install
 AUDIVERIS_CMD="/path/to/Audiveris" npm start
 ```
 
-Configuration (environment): `AUDIVERIS_CMD`, `PORT` (8480), `OMR_TIMEOUT_MS` (15 min —
-sized for the tuned 400-DPI rasterization, which runs ~40-70% longer than the old 300),
-`JOB_TTL_MS` (20 min), `WORK_ROOT`, `CORS_ORIGIN` (`*`; comma-separated for several origins), `MAX_UPLOAD_MB` (40),
-`OMR_CONCURRENCY` (1 — OMR is memory-hungry; raise it only with the RAM to match),
-`MAX_QUEUED_JOBS` (25 — a full queue answers 429), `OMR_JAVA_MAX_HEAP` (unset — caps the
-engine JVM's heap, e.g. `6g`; Audiveris 5.10.2's own start script bakes in `-Xmx8g`,
-oversized for hosts under 16 GB).
+Configuration (environment): `AUDIVERIS_CMD`, `HOST` (`127.0.0.1` — the service binds to
+loopback unless told otherwise; the Docker image sets `0.0.0.0`, where the container is the
+boundary), `PORT` (8480), `OMR_TIMEOUT_MS` (15 min — sized for the tuned 400-DPI
+rasterization, which runs ~40-70% longer than the old 300), `JOB_TTL_MS` (20 min),
+`WORK_ROOT`, `CORS_ORIGIN` (`*`; comma-separated for several origins), `MAX_UPLOAD_MB`
+(40), `MAX_PDF_PAGES` (60 — a PDF whose page objects count past the cap is refused with 422; the
+count is a plain scan of the file, which a PDF that packs its pages into object streams
+under-counts, so the cap is a guard against the honest large book, not a bound; a book
+rasterized at 400 DPI is the one input that can push the engine's heap past a small
+host), `OMR_CONCURRENCY` (1 — OMR is memory-hungry; raise it only with the RAM to match),
+`MAX_QUEUED_JOBS` (25 — a full queue answers 429), `MAX_LIVE_JOBS` (40 — jobs in any
+state, finished ones included, so fast-failing uploads cannot fill the disk through the
+queue cap), `AUDIVERIS_LOG_DIR` (unset — the engine's own log directory, swept after every
+run; see Privacy), `OMR_JAVA_MAX_HEAP` (unset — caps the engine JVM's heap, e.g. `6g`;
+Audiveris 5.10.2's own start script bakes in `-Xmx8g`, oversized for hosts under 16 GB —
+note that the jpackage `.exe` launcher on Windows ignores this knob; see
+deploy/home/README.md).
 
-**Deploying publicly?** The service itself enforces upload size, a queue cap, transient
-files, and manifest-only file serving — but it ships with no authentication and
-`CORS_ORIGIN=*`. Front it with your own auth/rate limiting, set `CORS_ORIGIN` to your
-app's origin, and size the work-root disk for `MAX_QUEUED_JOBS × MAX_UPLOAD_MB`.
+What the service accepts: a `.pdf`, `.png`, `.jpg`/`.jpeg` or `.tif`/`.tiff` whose leading
+bytes are that format's — anything else is refused with 415 before the engine is spawned
+(Audiveris would happily open `.omr` books and every ImageIO format, a far wider surface of
+native decoders than a score upload needs). A timed-out or deleted run has its whole
+process tree killed, launcher and JVM both.
+
+**Deploying publicly?** The service itself enforces upload size and page count, a queue
+and a live-job cap, transient files, format sniffing, and manifest-only file serving — but
+it ships with no authentication and `CORS_ORIGIN=*`. Front it with your own auth/rate
+limiting, set `CORS_ORIGIN` to your app's origin, size the work-root disk for
+`MAX_LIVE_JOBS × MAX_UPLOAD_MB`, and **run it under an account with nothing to lose**: the
+engine's native decoders parse whatever the internet sends. The Docker image already runs
+as an unprivileged user; on a bare host, use a dedicated low-privilege account.
 
 ### Hugging Face Spaces (now PRO-only)
 

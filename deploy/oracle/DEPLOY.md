@@ -119,8 +119,10 @@ curl https://omr.example.com/healthz
 If it hangs: VCN rule missing (step 5) or iptables not applied (re-run setup.sh). If
 TLS fails: DNS not propagated yet, or port 80 blocked (HTTP-01 needs it).
 
-While you are in `.env` territory: for production, uncomment `CORS_ORIGIN` in
-`docker-compose.yml` and set it to the web app's origin — the service ships `*`.
+While you are in `.env` territory: `CORS_ORIGIN` is REQUIRED there (the compose file
+refuses to start without it — `${CORS_ORIGIN:?…}`), set to the web app's origin(s),
+comma-separated. The service's own default is `*`, a local-dev value never meant for a
+public host (security review 2026-09-15).
 
 ## 9. Point SolfaScribe at it
 
@@ -141,7 +143,15 @@ Stated because the consent story depends on it, and verified against the code:
 - An uploaded score lives on the VM **only for the job's lifetime**: the client
   deletes the job when it has collected the MusicXML (`DELETE /jobs/:id` removes the
   files immediately), and the TTL sweeper removes anything not collected after
-  **15 minutes** (`JOB_TTL_MS`).
+  **20 minutes** (`JOB_TTL_MS`, counted from the moment the conversion ends).
+- The uploaded file itself is deleted **the moment its run ends** — the collection
+  window holds the MusicXML outputs alone.
+- Audiveris writes its own per-run log (it holds the input path and OCR'd lyric
+  fragments); with `AUDIVERIS_LOG_DIR` set — the compose file sets it — that log is
+  deleted when the run ends. **Verify the path once on this image** (it is Audiveris's
+  Linux convention, assumed, not proven here): after the first real run,
+  `docker compose exec omr find /home/omr -name '*.log'` must list nothing; if it lists
+  a log elsewhere, point `AUDIVERIS_LOG_DIR` there.
 - The job manifest is **in-memory only** — nothing about a score is written to any
   database or log store. If the container restarts, the service **wipes all leftover
   job files at boot** (the manifest that knew about them is gone, so they would

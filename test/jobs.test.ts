@@ -225,6 +225,7 @@ describe('JobStore — the guards at the door (security review 2026-09-15)', () 
       upload.push(null);
     }
     const outcomes = await Promise.all(submissions);
+    for (const job of store.liveJobsForTests()) await waitForFinish(store, job.id);
     return {
       admitted: outcomes.filter((outcome) => outcome === 'admitted').length,
       refused: outcomes.filter((outcome) => outcome === 'refused').length,
@@ -245,6 +246,19 @@ describe('JobStore — the guards at the door (security review 2026-09-15)', () 
       admitted: 1,
       refused: 4,
       directoriesOnDisk: 1,
+    });
+  });
+
+  it('the caps COUNT the streaming uploads — a cap of two admits exactly two (not "refuse while any streams")', async () => {
+    expect(await slowUploadFleet({ maxQueuedJobs: 2 })).toEqual({
+      admitted: 2,
+      refused: 3,
+      directoriesOnDisk: 2,
+    });
+    expect(await slowUploadFleet({ maxLiveJobs: 2 })).toEqual({
+      admitted: 2,
+      refused: 3,
+      directoriesOnDisk: 2,
     });
   });
 

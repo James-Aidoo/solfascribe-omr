@@ -82,6 +82,12 @@ switch (effectiveScenario) {
     console.log('WARN [book] PartwiseBuilder.java:3244 | Error visiting System#2 in {Page#1.2}');
     console.log('java.lang.NullPointerException: Cannot invoke "Part.getFirstMeasure()"');
     break;
+  case 'rhythms-then-oom':
+    // Rhythm noise and then the heap dies: "fewer pages may work" is the useful answer,
+    // not "a retry cannot help" — heap exhaustion outranks the rhythm class.
+    console.log('Voice excess 1/8 at measure 12 — no correct rhythm could be found');
+    console.log('Exception in thread "main" java.lang.OutOfMemoryError: Java heap space');
+    break;
   case 'oom':
     console.log('Exception in thread "main" java.lang.OutOfMemoryError: Java heap space');
     break;

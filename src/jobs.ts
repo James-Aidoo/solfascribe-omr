@@ -223,6 +223,12 @@ export class JobStore {
     return this.jobs.get(id);
   }
 
+  /** Every job in the manifest — for the suite, which waits on all of them before it
+   *  removes a work root. */
+  liveJobsForTests(): readonly Job[] {
+    return [...this.jobs.values()];
+  }
+
   /** The absolute path of one of a DONE job's movement files, or null. Filenames come
    *  from the job's own manifest, never from the URL verbatim — no path traversal. */
   movementPathOf(id: string, filename: string): string | null {

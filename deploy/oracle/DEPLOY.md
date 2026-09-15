@@ -148,7 +148,10 @@ Stated because the consent story depends on it, and verified against the code:
   window holds the MusicXML outputs alone.
 - Audiveris writes its own per-run log (it holds the input path and OCR'd lyric
   fragments); with `AUDIVERIS_LOG_DIR` set — the compose file sets it — that log is
-  deleted when the run ends.
+  deleted when the run ends. **Verify the path once on this image** (it is Audiveris's
+  Linux convention, assumed, not proven here): after the first real run,
+  `docker compose exec omr find /home/omr -name '*.log'` must list nothing; if it lists
+  a log elsewhere, point `AUDIVERIS_LOG_DIR` there.
 - The job manifest is **in-memory only** — nothing about a score is written to any
   database or log store. If the container restarts, the service **wipes all leftover
   job files at boot** (the manifest that knew about them is gone, so they would

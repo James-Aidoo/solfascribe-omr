@@ -88,6 +88,12 @@ describe('convertScore — the corpus-taught contract', () => {
     expect(result.failure?.detail).toContain('produced no output');
   });
 
+  it('heap exhaustion outranks the rhythm class — rhythm noise and then an OOM is the OOM', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('rhythms-then-oom');
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.failure?.detail).toContain('out of memory');
+  });
+
   it('heap exhaustion and a fatal crash are named, not left unclassified', async () => {
     const oom = await scenarioInput('oom');
     const oomResult = await convertScore(oom.inputPath, oom.outDirectory, options());

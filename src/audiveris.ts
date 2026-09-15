@@ -13,7 +13,7 @@
  *  - Some scores abort inside Audiveris's own rhythm analysis ("no correct rhythm") —
  *    unreachable by any retry; clients need this failure class called out explicitly.
  */
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -81,35 +81,81 @@ const MAX_SALVAGE_SHEETS = 2000;
 interface ProcessOutcome {
   log: string;
   timedOut: boolean;
+  /** The run was cut short by the caller (a deleted job), not by the clock. */
+  aborted: boolean;
 }
 
-/** Run one Audiveris invocation to completion (or timeout), capturing its combined log. */
+/**
+ * Kill the engine AND everything it spawned. A plain `child.kill('SIGKILL')` only ever
+ * reached the direct child: a launcher shim or the jpackage `.exe` died while the JVM
+ * beneath it kept rasterizing for as long as it liked — the wedged-pair incident the
+ * operations manual documents as a manual `Stop-Process` (security review 2026-09-15).
+ * Windows: `taskkill /T` walks the tree. POSIX: the child was spawned as its own process
+ * group (`detached`), so the negative pid signals the whole group.
+ */
+export function killProcessTree(child: ChildProcess): void {
+  if (child.pid === undefined) return;
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on(
+      'error',
+      () => child.kill('SIGKILL'),
+    );
+    return;
+  }
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    child.kill('SIGKILL');
+  }
+}
+
+/** Run one Audiveris invocation to completion (or timeout, or abort), capturing its
+ *  combined log. An abort (a client deleting its running job) kills the tree exactly as
+ *  a timeout does; the outcome says which. */
 function runProcess(
   command: readonly string[],
   processArguments: readonly string[],
   timeoutMs: number,
   environmentOverrides?: NodeJS.ProcessEnv,
+  abortSignal?: AbortSignal,
 ): Promise<ProcessOutcome> {
   return new Promise((resolve) => {
+    // An abort that landed before the spawn (a job deleted while its output directory
+    // was still being made): a listener added to an already-aborted signal never fires,
+    // so answer without spawning anything at all.
+    if (abortSignal?.aborted) {
+      resolve({ log: '', timedOut: false, aborted: true });
+      return;
+    }
     const [executable, ...leadingArguments] = command;
     const child = spawn(executable!, [...leadingArguments, ...processArguments], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: environmentOverrides ? { ...process.env, ...environmentOverrides } : undefined,
+      // Its own process group on POSIX, so a kill can take the JVM down with the shim.
+      detached: process.platform !== 'win32',
     });
     let log = '';
     let timedOut = false;
+    let aborted = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      killProcessTree(child);
     }, timeoutMs);
+    const onAbort = () => {
+      aborted = true;
+      killProcessTree(child);
+    };
+    abortSignal?.addEventListener('abort', onAbort, { once: true });
     child.stdout.on('data', (chunk: Buffer) => (log += chunk.toString('utf8')));
     child.stderr.on('data', (chunk: Buffer) => (log += chunk.toString('utf8')));
     const finish = () => {
       clearTimeout(timer);
-      resolve({ log, timedOut });
+      abortSignal?.removeEventListener('abort', onAbort);
+      resolve({ log, timedOut, aborted });
     };
     child.on('close', finish);
     child.on('error', (error) => {
+      // The message can carry the command path; the caller redacts before it leaves.
       log += `\n[spawn error] ${String(error)}`;
       finish();
     });
@@ -177,6 +223,17 @@ export function totalSheetsOf(log: string): number | null {
 
 function classifyFailure(log: string, timedOut: boolean): { class: OmrFailureClass; detail: string } {
   if (timedOut) return { class: 'timeout', detail: 'The OMR run exceeded its time budget.' };
+  // Two engine deaths that used to fall into the unclassified bucket (the owner's
+  // question of 2026-09-06, "what would cause the omr to fail for an unclassified
+  // reason?"): the JVM running out of heap on a large book, and a plain crash.
+  if (/OutOfMemoryError|GC overhead limit|Java heap space/i.test(log))
+    return {
+      class: 'omr-failed',
+      detail:
+        'Audiveris ran out of memory on this score — fewer pages, or a smaller page, may work.',
+    };
+  if (/Exception in thread|java\.lang\.\w+(Exception|Error)/i.test(log))
+    return { class: 'omr-failed', detail: 'Audiveris crashed while reading this score.' };
   if (/no correct rhythm|voice excess/i.test(log))
     return {
       class: 'rhythm-analysis-abort',
@@ -220,6 +277,7 @@ async function runOnce(
   outputDirectory: string,
   options: OmrRunOptions,
   sheets?: readonly number[],
+  abortSignal?: AbortSignal,
 ): Promise<{ outcome: ProcessOutcome; movements: MovementFile[] }> {
   await mkdir(outputDirectory, { recursive: true });
   // One argv entry PER sheet number: unambiguous under args4j's int-array handler,
@@ -238,6 +296,7 @@ async function runOnce(
     ['-batch', '-export', ...TUNED_ENGINE_CONSTANTS, ...sheetArguments, '-output', outputDirectory, inputPath],
     options.timeoutMs,
     environmentOverrides,
+    abortSignal,
   );
   return { outcome, movements: await collectMovements(outputDirectory) };
 }
@@ -251,8 +310,17 @@ export async function convertScore(
   inputPath: string,
   outputDirectory: string,
   options: OmrRunOptions,
+  abortSignal?: AbortSignal,
 ): Promise<OmrResult> {
-  const fullPass = await runOnce(inputPath, outputDirectory, options);
+  const fullPass = await runOnce(inputPath, outputDirectory, options, undefined, abortSignal);
+  if (fullPass.outcome.aborted) {
+    return {
+      status: 'failed',
+      movements: [],
+      failure: { class: 'omr-failed', detail: 'The job was deleted while it was running.' },
+      logTail: '',
+    };
+  }
   const logTailOf = (log: string) => log.slice(-LOG_TAIL_CHARS);
   if (fullPass.movements.length > 0) {
     return { status: 'done', movements: fullPass.movements, logTail: logTailOf(fullPass.outcome.log) };
@@ -274,7 +342,7 @@ export async function convertScore(
       (sheetNumber) => !brokenSheets.includes(sheetNumber),
     );
     if (healthySheets.length > 0) {
-      const salvagePass = await runOnce(inputPath, outputDirectory, options, healthySheets);
+      const salvagePass = await runOnce(inputPath, outputDirectory, options, healthySheets, abortSignal);
       const combinedLog = `${fullPass.outcome.log}\n--- salvage retry (sheets ${healthySheets.join(', ')}) ---\n${salvagePass.outcome.log}`;
       if (salvagePass.movements.length > 0) {
         return {

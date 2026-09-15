@@ -47,8 +47,45 @@ Two routes; the Startup folder needs no admin rights:
   schtasks /Create /TN "solfascribe-omr tunnel"  /SC ONLOGON /TR "cloudflared tunnel run solfascribe-omr"
   ```
 
+## Keep the machine safe — read this before publishing the tunnel
+
+The service runs a Java OMR engine with **native PDF and image decoders on whatever the
+internet uploads**, and the security review of 2026-09-15 rated running it under your own
+account the one critical finding in the estate. Three things, in order:
+
+1. **Run it under an account with nothing to lose.** Create a standard (non-administrator)
+   local user — Settings → Accounts → Other users → Add — and run `start-home.ps1` and
+   the Audiveris install as that user (a scheduled task with `/RU <user>`, or a second
+   session). Your own profile, browser sessions and the tunnel credentials in
+   `%USERPROFILE%\.cloudflared` are then out of the engine's reach. Alternatively run the
+   repo's Docker image (it already runs as an unprivileged user) with only
+   `127.0.0.1:8480` published, and keep `cloudflared` on the host.
+2. **Bind to loopback.** The service now defaults to `HOST=127.0.0.1`; the tunnel dials
+   `localhost:8480`, so nothing needs a wider bind. Remove any Windows Firewall inbound
+   rule that allowed `node.exe` on the Public profile (Windows Defender Firewall →
+   Advanced settings → Inbound Rules → "Node.js JavaScript Runtime" → Disable or Delete):
+   with the old `0.0.0.0` bind that rule let any LAN the laptop joined reach the service
+   directly, around Cloudflare.
+3. **Rate-limit at the edge.** Cloudflare → the zone → Security → Security rules → Rate
+   limiting rules: hostname `omr.<your-domain>`, path starts with `/jobs`, method `POST`,
+   more than 5 requests per 10 seconds per IP → Block. A conversion takes minutes; no
+   reader posts five in ten seconds. (On the Free plan the zone allows ONE rate-limiting
+   rule; if the till's rule already uses it, widen that rule's hostname expression to
+   cover both hosts instead.)
+
+Also set `AUDIVERIS_LOG_DIR` in `home.env` to Audiveris's own log directory —
+`%APPDATA%\AudiverisLtd\audiveris\log` on Windows — so each run's engine log (it holds
+the input path and OCR'd lyric fragments) is deleted when the run ends. Delete what is
+already there once by hand: that directory kept a log per run since the service went live.
+`OMR_JAVA_MAX_HEAP` does not reach the jpackage `Audiveris.exe` launcher (only the Gradle
+start script reads `AUDIVERIS_OPTS`); to cap the heap on Windows, set
+`JAVA_TOOL_OPTIONS=-Xmx6g` in `home.env` instead and check the run log for the line
+"Picked up JAVA_TOOL_OPTIONS".
+
 ## Wiring the web app
 
 Set `VITE_OMR_SERVICE_URL=https://omr.<your-domain>` in the web app's build environment
 and redeploy — the PDF door lights up. Retention on the home machine is the service's own
-discipline: per-job files, a 15-minute TTL sweep, and a boot-time orphan wipe.
+discipline: the upload deleted when its run ends, per-job outputs, a 20-minute TTL sweep,
+the engine's log swept per run (with `AUDIVERIS_LOG_DIR` set), and a boot-time orphan
+wipe.

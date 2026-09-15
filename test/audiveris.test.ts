@@ -75,6 +75,34 @@ describe('convertScore — the corpus-taught contract', () => {
     expect(result.status).toBe('failed');
     expect(result.failure?.class).toBe('timeout');
   });
+
+  it('the timeout kill reaches the engine’s CHILD too — a launcher over a JVM leaves nothing behind', async () => {
+    // The wedged-pair incident: killing the shim left the JVM running past the budget.
+    const { inputPath, outDirectory } = await scenarioInput('slowtree');
+    const result = await convertScore(inputPath, outDirectory, options(1500));
+    expect(result.failure?.class).toBe('timeout');
+    const { readFile } = await import('node:fs/promises');
+    const grandchildPid = Number(await readFile(`${inputPath}.grandchild-pid`, 'utf8'));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    let alive = true;
+    try {
+      process.kill(grandchildPid, 0);
+    } catch {
+      alive = false;
+    }
+    expect(alive).toBe(false);
+  });
+
+  it('an abort (a deleted job) ends the run at once and says so', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('slow');
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+    const startedAt = Date.now();
+    const result = await convertScore(inputPath, outDirectory, options(30_000), controller.signal);
+    expect(Date.now() - startedAt).toBeLessThan(4000);
+    expect(result.status).toBe('failed');
+    expect(result.failure?.detail).toContain('deleted');
+  });
 });
 
 describe('JVM heap sizing — the OMR_JAVA_MAX_HEAP knob', () => {

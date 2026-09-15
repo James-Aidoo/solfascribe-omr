@@ -66,6 +66,19 @@ switch (effectiveScenario) {
   case 'slow':
     await new Promise((resolve) => setTimeout(resolve, 5000));
     break;
+  case 'slowtree': {
+    // A launcher that hands the real work to a child (the jpackage .exe over its JVM):
+    // the grandchild sleeps long, writes its pid next to the input so the suite can
+    // check the timeout kill reached it, and the "launcher" waits for it.
+    const { spawn } = await import('node:child_process');
+    const { writeFileSync: writePid } = await import('node:fs');
+    const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], {
+      stdio: 'ignore',
+    });
+    writePid(`${inputPath}.grandchild-pid`, String(grandchild.pid));
+    await new Promise((resolve) => grandchild.on('exit', resolve));
+    break;
+  }
   case 'garbage':
     console.log('Could not load input as a score');
     break;

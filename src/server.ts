@@ -7,19 +7,19 @@
  *   GET    /jobs/:id/files/:name → one movement's MusicXML bytes
  *   DELETE /jobs/:id             → remove the job and its files immediately
  *
- * Configuration is environment-only (12-factor): AUDIVERIS_CMD, PORT, OMR_TIMEOUT_MS,
- * JOB_TTL_MS, WORK_ROOT, CORS_ORIGIN, MAX_UPLOAD_MB, OMR_CONCURRENCY,
- * OMR_JAVA_MAX_HEAP, MAX_QUEUED_JOBS.
+ * Configuration is environment-only (12-factor): AUDIVERIS_CMD, HOST, PORT,
+ * OMR_TIMEOUT_MS, JOB_TTL_MS, WORK_ROOT, CORS_ORIGIN, MAX_UPLOAD_MB, OMR_CONCURRENCY,
+ * OMR_JAVA_MAX_HEAP, MAX_QUEUED_JOBS, MAX_LIVE_JOBS, MAX_PDF_PAGES, AUDIVERIS_LOG_DIR.
  */
-import Fastify from 'fastify';
+import Fastify, { type FastifyError } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import { createReadStream } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { validateJavaMaxHeap } from './audiveris.js';
-import { JobStore, QueueFullError, removeOrphanedWork } from './jobs.js';
+import { JobStore, QueueFullError, RefusedUploadError, removeOrphanedWork } from './jobs.js';
 
 /** CORS_ORIGIN is comma-separated — the app lives on more than one origin (production +
  *  the `next` staging preview). Found the hard way (2026-08-29): a scan from staging
@@ -36,8 +36,19 @@ export function corsOriginsOf(rawOrigins: string | undefined): string | string[]
   return origins.length === 1 ? origins[0]! : origins;
 }
 
+/** The HTTP status an upload refusal maps to: 415 for a format the service does not
+ *  read, 422 for a PDF that declares more pages than the cap. Pure; pinned. */
+export function statusOfRefusal(error: RefusedUploadError): 415 | 422 {
+  return error.reason === 'too-many-pages' ? 422 : 415;
+}
+
 const environment = process.env;
 const configuration = {
+  // 127.0.0.1 by default: the home deployment is reached through the tunnel, which dials
+  // localhost, and a wider bind was reachable from any LAN the laptop joined (security
+  // review 2026-09-15). The Docker image sets HOST=0.0.0.0, where the container is the
+  // boundary.
+  host: environment.HOST ?? '127.0.0.1',
   port: Number(environment.PORT ?? 8480),
   // Space-separated so a wrapper like `node fake.mjs` works; quote-free paths only —
   // point AUDIVERIS_CMD at a shim script if the install path contains spaces (the shim
@@ -53,6 +64,12 @@ const configuration = {
   maxUploadBytes: Number(environment.MAX_UPLOAD_MB ?? 40) * 1024 * 1024,
   concurrency: Number(environment.OMR_CONCURRENCY ?? 1),
   maxQueuedJobs: Number(environment.MAX_QUEUED_JOBS ?? 25),
+  maxLiveJobs: Number(environment.MAX_LIVE_JOBS ?? 40),
+  maxPdfPages: Number(environment.MAX_PDF_PAGES ?? 60),
+  // The engine's own log directory (Audiveris writes one file per run there, holding the
+  // input path and OCR'd text); swept after every run when named. Windows:
+  // %APPDATA%\AudiverisLtd\audiveris\log — see deploy/home/README.md.
+  audiverisLogDirectory: environment.AUDIVERIS_LOG_DIR || undefined,
   // JVM max heap for the Audiveris run ("6g", "4096m"). Unset keeps the engine default
   // (5.10.2 bakes -Xmx8g into its start script — fine on a ≥16 GB host, oversized for
   // smaller boxes; the 12 GB Oracle deploy sets 6g — see deploy/oracle/docker-compose.yml).
@@ -62,21 +79,45 @@ const configuration = {
 };
 
 export function buildServer(store: JobStore) {
-  const server = Fastify({ logger: true });
+  const server = Fastify({
+    logger: true,
+    // A slow-loris upload holds a file handle, not memory (uploads stream to disk), but it
+    // must still end: two minutes covers a 40 MB upload on a slow mobile link.
+    connectionTimeout: 130_000,
+    requestTimeout: 120_000,
+  });
   void server.register(cors, { origin: configuration.corsOrigin });
-  void server.register(multipart, { limits: { fileSize: configuration.maxUploadBytes } });
+  void server.register(multipart, { limits: { fileSize: configuration.maxUploadBytes, files: 1 } });
+
+  // Every 5xx answers one fixed sentence: Node's own error messages carry absolute paths
+  // (a full disk names the temp directory and the user), and the log has the real one.
+  server.setErrorHandler((error: FastifyError, request, reply) => {
+    const statusCode = typeof error.statusCode === 'number' ? error.statusCode : 500;
+    if (statusCode >= 500) {
+      request.log.error(error);
+      return reply.code(500).send({ error: 'The conversion service hit an internal error.' });
+    }
+    return reply.code(statusCode).send({ error: error.message });
+  });
 
   server.get('/healthz', async () => ({ ok: true }));
 
   server.post('/jobs', async (request, reply) => {
     const upload = await request.file();
     if (!upload) return reply.code(400).send({ error: 'Send the score as a multipart file field.' });
-    const fileBytes = await upload.toBuffer();
     try {
-      const job = await store.submit(upload.filename || 'score.pdf', fileBytes);
+      const job = await store.submitStream(upload.filename || 'score.pdf', upload.file);
+      // A truncated stream (the size limit) surfaces here as the multipart plugin's flag.
+      if (upload.file.truncated) {
+        await store.delete(job.id);
+        return reply.code(413).send({ error: 'The file is larger than this service accepts.' });
+      }
       return await reply.code(202).send({ jobId: job.id });
     } catch (error) {
       if (error instanceof QueueFullError) return reply.code(429).send({ error: error.message });
+      if (error instanceof RefusedUploadError) {
+        return reply.code(statusOfRefusal(error)).send({ error: error.message });
+      }
       throw error;
     }
   });
@@ -127,6 +168,16 @@ async function main() {
     jobTtlMs: configuration.jobTtlMs,
     concurrency: configuration.concurrency,
     maxQueuedJobs: configuration.maxQueuedJobs,
+    maxLiveJobs: configuration.maxLiveJobs,
+    maxPdfPages: configuration.maxPdfPages,
+    audiverisLogDirectory: configuration.audiverisLogDirectory,
+    // The three roots a leaked message could name: where jobs live, where the engine is
+    // installed, and the operator's own profile.
+    redactedPathRoots: [
+      configuration.workRoot,
+      dirname(configuration.audiverisCommand[configuration.audiverisCommand.length - 1] ?? ''),
+      homedir(),
+    ],
     omr: {
       audiverisCommand: configuration.audiverisCommand,
       timeoutMs: configuration.timeoutMs,
@@ -135,7 +186,7 @@ async function main() {
   });
   setInterval(() => void store.sweepExpired(), 60 * 1000).unref();
   const server = buildServer(store);
-  await server.listen({ port: configuration.port, host: '0.0.0.0' });
+  await server.listen({ port: configuration.port, host: configuration.host });
 }
 
 // Only auto-start when run directly (tests import buildServer without listening).

@@ -84,7 +84,9 @@ loopback unless told otherwise; the Docker image sets `0.0.0.0`, where the conta
 boundary), `PORT` (8480), `OMR_TIMEOUT_MS` (15 min — sized for the tuned 400-DPI
 rasterization, which runs ~40-70% longer than the old 300), `JOB_TTL_MS` (20 min),
 `WORK_ROOT`, `CORS_ORIGIN` (`*`; comma-separated for several origins), `MAX_UPLOAD_MB`
-(40), `MAX_PDF_PAGES` (60 — a PDF declaring more pages is refused with 422: a book
+(40), `MAX_PDF_PAGES` (60 — a PDF whose page objects count past the cap is refused with 422; the
+count is a plain scan of the file, which a PDF that packs its pages into object streams
+under-counts, so the cap is a guard against the honest large book, not a bound; a book
 rasterized at 400 DPI is the one input that can push the engine's heap past a small
 host), `OMR_CONCURRENCY` (1 — OMR is memory-hungry; raise it only with the RAM to match),
 `MAX_QUEUED_JOBS` (25 — a full queue answers 429), `MAX_LIVE_JOBS` (40 — jobs in any

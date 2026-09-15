@@ -11,8 +11,18 @@
  */
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, open, readdir, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import {
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
 import { convertScore, type OmrResult, type OmrRunOptions } from './audiveris.js';
@@ -112,6 +122,9 @@ export class RefusedUploadError extends Error {
   }
 }
 
+/** Audiveris names each run's log by its start instant: `20260914T093700.log`. */
+export const ENGINE_LOG_FILENAME = /^\d{8}T\d{6}\.log$/;
+
 /** Remove a directory with a few retries: on Windows a file the JVM still holds open
  *  refuses deletion for a moment after the process is killed. */
 async function removeDirectoryWithRetries(directory: string): Promise<void> {
@@ -122,6 +135,11 @@ export class JobStore {
   private readonly jobs = new Map<string, Job>();
   private readonly queue: string[] = [];
   private readonly runningJobs = new Map<string, { abort: AbortController; done: Promise<void> }>();
+  /** Directories of submissions still streaming in — owned, but not yet in `jobs`. The
+   *  sweeper must not treat them as orphans: an upload takes seconds to minutes and the
+   *  sweep runs every minute, and on Linux `rm -rf` of an open file succeeds, so the
+   *  stream's next write would land in a deleted directory (review 2026-09-15). */
+  private readonly pendingDirectories = new Set<string>();
   private readonly options: JobStoreOptions;
 
   constructor(options: JobStoreOptions) {
@@ -147,9 +165,10 @@ export class JobStore {
     if (this.jobs.size >= (this.options.maxLiveJobs ?? 40)) throw new QueueFullError();
     const id = randomUUID();
     const workDirectory = join(this.options.workRoot, id);
-    await mkdir(join(workDirectory, 'out'), { recursive: true });
-    const uploadPath = join(workDirectory, 'upload.bin');
+    this.pendingDirectories.add(id);
     try {
+      await mkdir(join(workDirectory, 'out'), { recursive: true });
+      const uploadPath = join(workDirectory, 'upload.bin');
       await writeUpload(uploadPath);
       const inputFilename = await this.admitUpload(scoreName, uploadPath);
       const job: Job = {
@@ -168,6 +187,8 @@ export class JobStore {
     } catch (error) {
       await removeDirectoryWithRetries(workDirectory);
       throw error;
+    } finally {
+      this.pendingDirectories.delete(id);
     }
   }
 
@@ -188,8 +209,7 @@ export class JobStore {
       }
     }
     const inputFilename = safeInputFilenameOf(scoreName, inspection.extension);
-    const { rename } = await import('node:fs/promises');
-    await rename(uploadPath, join(uploadPath, '..', inputFilename));
+    await rename(uploadPath, join(dirname(uploadPath), inputFilename));
     return inputFilename;
   }
 
@@ -257,7 +277,7 @@ export class JobStore {
     }
     let removedCount = 0;
     for (const entry of entries) {
-      if (this.jobs.has(entry.name)) continue;
+      if (this.jobs.has(entry.name) || this.pendingDirectories.has(entry.name)) continue;
       try {
         await removeDirectoryWithRetries(join(this.options.workRoot, entry.name));
         removedCount++;
@@ -313,7 +333,13 @@ export class JobStore {
     }
   }
 
-  /** The engine's own per-run log files, newer than this run's start. */
+  /** The engine's own per-run log files newer than this run's start — and ONLY files
+   *  named the way Audiveris names them (`20260914T093700.log`), so a mistyped directory
+   *  (the profile root, say) loses nothing else. A log the engine still holds open at
+   *  this moment is left for the operator's periodic wipe (deploy/home/README.md): the
+   *  next run's window opens at ITS start, so it will not see this one. With a
+   *  concurrency above one, a sibling run's live log is inside the window too — the
+   *  engine is at concurrency 1 everywhere this service is deployed. */
   private async sweepEngineLogs(startedAt: number): Promise<void> {
     const directory = this.options.audiverisLogDirectory;
     if (!directory) return;
@@ -324,12 +350,13 @@ export class JobStore {
       return;
     }
     for (const entry of entries) {
+      if (!ENGINE_LOG_FILENAME.test(entry)) continue;
       const path = join(directory, entry);
       try {
         const fileStat = await stat(path);
         if (fileStat.isFile() && fileStat.mtimeMs >= startedAt - 1000) await unlink(path);
       } catch {
-        // A log the engine still holds open is caught by the next run's sweep.
+        // Held open by the engine, or already gone — see the note above.
       }
     }
   }

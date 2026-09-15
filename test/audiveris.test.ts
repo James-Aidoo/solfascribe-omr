@@ -62,6 +62,23 @@ describe('convertScore — the corpus-taught contract', () => {
     expect(result.logTail).toContain('no correct rhythm');
   });
 
+  it('a rhythm abort still classifies as one when the log also carries WARN-level exception names', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('rhythms-noisy');
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.status).toBe('failed');
+    expect(result.failure?.class).toBe('rhythm-analysis-abort');
+  });
+
+  it('heap exhaustion and a fatal crash are named, not left unclassified', async () => {
+    const oom = await scenarioInput('oom');
+    const oomResult = await convertScore(oom.inputPath, oom.outDirectory, options());
+    expect(oomResult.failure?.class).toBe('omr-failed');
+    expect(oomResult.failure?.detail).toContain('out of memory');
+    const crash = await scenarioInput('crash');
+    const crashResult = await convertScore(crash.inputPath, crash.outDirectory, options());
+    expect(crashResult.failure?.detail).toContain('crashed');
+  });
+
   it('an unreadable input is classified as such', async () => {
     const { inputPath, outDirectory } = await scenarioInput('garbage');
     const result = await convertScore(inputPath, outDirectory, options());
@@ -78,6 +95,10 @@ describe('convertScore — the corpus-taught contract', () => {
 
   it('the timeout kill reaches the engine’s CHILD too — a launcher over a JVM leaves nothing behind', async () => {
     // The wedged-pair incident: killing the shim left the JVM running past the budget.
+    // On Windows this pin cannot bite: libuv puts every Node child in a job object with
+    // kill-on-close, so a plain kill of the fake launcher already takes its grandchild
+    // down — the real Audiveris.exe has no such job object. The POSIX run (CI is
+    // ubuntu-latest) is the one that proves the process-group kill.
     const { inputPath, outDirectory } = await scenarioInput('slowtree');
     const result = await convertScore(inputPath, outDirectory, options(1500));
     expect(result.failure?.class).toBe('timeout');

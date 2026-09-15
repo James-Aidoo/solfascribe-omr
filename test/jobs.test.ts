@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { Readable } from 'node:stream';
 import { JobStore, QueueFullError, RefusedUploadError, removeOrphanedWork } from '../src/jobs';
 
 const FAKE: readonly string[] = ['node', join(process.cwd(), 'fake-audiveris', 'fake.mjs')];
@@ -247,7 +248,7 @@ describe('JobStore — the guards at the door (security review 2026-09-15)', () 
     workRoots.push(workRoot);
     const engineLogs = join(workRoot, 'engine-logs');
     await mkdir(engineLogs, { recursive: true });
-    const oldLog = join(engineLogs, 'audiveris-old.log');
+    const oldLog = join(engineLogs, '20260101T000000.log');
     await writeFile(oldLog, 'from long ago');
     const past = new Date(Date.now() - 60 * 60 * 1000);
     const { utimes } = await import('node:fs/promises');
@@ -261,13 +262,41 @@ describe('JobStore — the guards at the door (security review 2026-09-15)', () 
     // The run's own log: written as the run starts (the engine opens it first thing), so
     // its mtime falls inside the sweep's window — the window opens one second before
     // the run, for exactly this ordering.
-    const runLog = join(engineLogs, 'audiveris-run.log');
+    const runLog = join(engineLogs, '20260915T120000.log');
     await writeFile(runLog, 'Book x | input C:/somewhere/score.pdf');
+    // A file that is NOT an engine log — the operator pointed the variable at the wrong
+    // directory — is never touched, however new it is.
+    const strayFile = join(engineLogs, 'settings.json');
+    await writeFile(strayFile, '{}');
     expect(existsSync(runLog)).toBe(true);
     const job = await store.submit('ok.pdf', fakePdf('ok'));
     await waitForFinish(store, job.id);
     expect(existsSync(runLog)).toBe(false);
     expect(existsSync(oldLog)).toBe(true);
+    expect(existsSync(strayFile)).toBe(true);
+  });
+
+  it('a sweep that fires while an upload is still streaming in leaves that upload alone', async () => {
+    const store = await makeStore();
+    // A slow client: the PDF header arrives, then nothing for a while, then the rest.
+    const upload = new Readable({
+      read() {
+        /* pushed by hand below */
+      },
+    });
+    const submission = store.submitStream('ok.pdf', upload);
+    upload.push(Buffer.from('%PDF-1.4\n', 'latin1'));
+    await new Promise((resolve) => setTimeout(resolve, 50)); // the directory + header are on disk
+    // The minute sweep fires mid-upload: nothing in `jobs` owns the directory yet.
+    await store.sweepExpired();
+    const [pendingDirectory] = await readdir(workRoots[workRoots.length - 1]!);
+    expect(pendingDirectory).toBeDefined();
+    expect(existsSync(join(workRoots[workRoots.length - 1]!, pendingDirectory!, 'out'))).toBe(true);
+    upload.push(Buffer.from('ok\n(fake score)', 'latin1'));
+    upload.push(null);
+    const job = await submission;
+    await waitForFinish(store, job.id);
+    expect(store.get(job.id)?.status).toBe('done');
   });
 });
 

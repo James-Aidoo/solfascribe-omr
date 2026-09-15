@@ -225,15 +225,18 @@ function classifyFailure(log: string, timedOut: boolean): { class: OmrFailureCla
   if (timedOut) return { class: 'timeout', detail: 'The OMR run exceeded its time budget.' };
   // Two engine deaths that used to fall into the unclassified bucket (the owner's
   // question of 2026-09-06, "what would cause the omr to fail for an unclassified
-  // reason?"): the JVM running out of heap on a large book, and a plain crash.
+  // reason?"): the JVM running out of heap on a large book, and a plain crash. Heap
+  // exhaustion is unambiguous and comes first. The crash test comes LAST and matches
+  // only the fatal shape (`Exception in thread`): a SUCCESSFUL run logs
+  // `java.lang.NullPointerException` lines as WARN noise from PartwiseBuilder (the
+  // Love-is-a-Verb tuning log, 2026-08-17), so a bare exception name must never
+  // outrank the corpus-taught classes below it.
   if (/OutOfMemoryError|GC overhead limit|Java heap space/i.test(log))
     return {
       class: 'omr-failed',
       detail:
         'Audiveris ran out of memory on this score — fewer pages, or a smaller page, may work.',
     };
-  if (/Exception in thread|java\.lang\.\w+(Exception|Error)/i.test(log))
-    return { class: 'omr-failed', detail: 'Audiveris crashed while reading this score.' };
   if (/no correct rhythm|voice excess/i.test(log))
     return {
       class: 'rhythm-analysis-abort',
@@ -242,6 +245,8 @@ function classifyFailure(log: string, timedOut: boolean): { class: OmrFailureCla
     };
   if (/could not load|cannot read|unsupported|not a valid|no such file/i.test(log))
     return { class: 'unreadable-input', detail: 'The input could not be read as a score.' };
+  if (/Exception in thread/i.test(log))
+    return { class: 'omr-failed', detail: 'Audiveris crashed while reading this score.' };
   return { class: 'omr-failed', detail: 'Audiveris produced no output — see the log tail.' };
 }
 

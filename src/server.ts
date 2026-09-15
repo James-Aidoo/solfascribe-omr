@@ -37,7 +37,8 @@ export function corsOriginsOf(rawOrigins: string | undefined): string | string[]
 }
 
 /** The HTTP status an upload refusal maps to: 415 for a format the service does not
- *  read, 422 for a PDF that declares more pages than the cap. Pure; pinned. */
+ *  read, 422 for a PDF that declares more pages than the cap. Pure; pinned through the
+ *  routes in test/server.test.ts. */
 export function statusOfRefusal(error: RefusedUploadError): 415 | 422 {
   return error.reason === 'too-many-pages' ? 422 : 415;
 }
@@ -82,9 +83,11 @@ export function buildServer(store: JobStore) {
   const server = Fastify({
     logger: true,
     // A slow-loris upload holds a file handle, not memory (uploads stream to disk), but it
-    // must still end: two minutes covers a 40 MB upload on a slow mobile link.
-    connectionTimeout: 130_000,
-    requestTimeout: 120_000,
+    // must still end: the whole request must ARRIVE inside requestTimeout, and the
+    // readers are on mobile links — five minutes lets a 40 MB upload through at about
+    // 1 Mbit/s sustained, where two minutes needed nearly three.
+    connectionTimeout: 310_000,
+    requestTimeout: 300_000,
   });
   void server.register(cors, { origin: configuration.corsOrigin });
   void server.register(multipart, { limits: { fileSize: configuration.maxUploadBytes, files: 1 } });

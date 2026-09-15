@@ -55,6 +55,23 @@ switch (effectiveScenario) {
   case 'rhythms':
     console.log('Voice excess 1/8 at measure 12 — no correct rhythm could be found');
     break;
+  case 'rhythms-noisy':
+    // A real 5.10.2 run logs exception NAMES as WARN noise and carries on (the
+    // Love-is-a-Verb tuning log): the rhythm abort underneath must still win.
+    console.log('WARN [book] PartwiseBuilder.java:3244 | Error visiting System#2 in {Page#1.2}');
+    console.log(
+      'java.lang.NullPointerException: Cannot invoke "org.audiveris.omr.sheet.Part.getFirstMeasure()" because "refPart" is null',
+    );
+    console.log('\tat org.audiveris.omr.sheet.Part.createDummyPart(Part.java:359)');
+    console.log('Voice excess 1/8 at measure 12 — no correct rhythm could be found');
+    break;
+  case 'oom':
+    console.log('Exception in thread "main" java.lang.OutOfMemoryError: Java heap space');
+    break;
+  case 'crash':
+    console.log('Exception in thread "main" java.lang.IllegalStateException: boom');
+    console.log('\tat org.audiveris.omr.Main.main(Main.java:263)');
+    break;
   case 'badsheet':
     console.log('Book badsheet has 3 sheets');
     if (sheets && !sheets.includes('2')) {

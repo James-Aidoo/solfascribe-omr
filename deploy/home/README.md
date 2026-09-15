@@ -78,9 +78,14 @@ Also set `AUDIVERIS_LOG_DIR` in `home.env` to Audiveris's own log directory —
 the input path and OCR'd lyric fragments) is deleted when the run ends. Delete what is
 already there once by hand: that directory kept a log per run since the service went live.
 `OMR_JAVA_MAX_HEAP` does not reach the jpackage `Audiveris.exe` launcher (only the Gradle
-start script reads `AUDIVERIS_OPTS`); to cap the heap on Windows, set
-`JAVA_TOOL_OPTIONS=-Xmx6g` in `home.env` instead and check the run log for the line
-"Picked up JAVA_TOOL_OPTIONS".
+start script reads `AUDIVERIS_OPTS`), and neither does `JAVA_TOOL_OPTIONS`: the launcher
+bakes `-Xmx8G` into `app/Audiveris.cfg`, the JVM parses `JAVA_TOOL_OPTIONS` first and the
+command line last, so the 8 GB wins — while the "Picked up JAVA_TOOL_OPTIONS" line prints
+regardless (a false confirmation). `_JAVA_OPTIONS` is parsed AFTER the command line and
+does win: set `_JAVA_OPTIONS=-Xmx6g` in `home.env`. Prove it once against the bundled
+runtime — `$env:_JAVA_OPTIONS='-Xmx6g'; & '<Audiveris>\runtime\bin\java.exe' -Xmx8G
+-XX:+PrintFlagsFinal -version | Select-String MaxHeapSize` must print `6442450944`.
+(Editing the `java-options` line in `app/Audiveris.cfg` is the other way.)
 
 ## Wiring the web app
 

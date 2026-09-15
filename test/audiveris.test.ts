@@ -69,6 +69,25 @@ describe('convertScore — the corpus-taught contract', () => {
     expect(result.failure?.class).toBe('rhythm-analysis-abort');
   });
 
+  it('the crash branch stays LAST: a rhythm abort followed by a fatal line is still the rhythm abort', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('rhythms-then-fatal');
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.failure?.class).toBe('rhythm-analysis-abort');
+  });
+
+  it('… and an unreadable input followed by a fatal line is still the unreadable input', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('unreadable-then-fatal');
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.failure?.class).toBe('unreadable-input');
+  });
+
+  it('WARN-level exception names alone are not a crash — "produced no output" is the answer', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('warn-noise-only');
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.failure?.class).toBe('omr-failed');
+    expect(result.failure?.detail).toContain('produced no output');
+  });
+
   it('heap exhaustion and a fatal crash are named, not left unclassified', async () => {
     const oom = await scenarioInput('oom');
     const oomResult = await convertScore(oom.inputPath, oom.outDirectory, options());

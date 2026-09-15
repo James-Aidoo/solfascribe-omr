@@ -200,6 +200,54 @@ describe('JobStore — the guards at the door (security review 2026-09-15)', () 
     await expect(store.submit('ok.pdf', fakePdf('ok'))).rejects.toBeInstanceOf(QueueFullError);
   });
 
+  /** Five clients open an upload at once, stall after the header, then finish: how many
+   *  does a store with these caps admit, and what is left on disk? */
+  async function slowUploadFleet(caps: { maxQueuedJobs?: number; maxLiveJobs?: number }) {
+    const workRoot = await mkdtemp(join(tmpdir(), 'omr-jobs-'));
+    workRoots.push(workRoot);
+    const store = new JobStore({
+      workRoot,
+      jobTtlMs: 60_000,
+      ...caps,
+      omr: { audiverisCommand: FAKE, timeoutMs: 30_000 },
+    });
+    const uploads = Array.from({ length: 5 }, () => new Readable({ read() {} }));
+    const submissions = uploads.map((upload) =>
+      store.submitStream('ok.pdf', upload).then(
+        () => 'admitted' as const,
+        (error: unknown) => (error instanceof QueueFullError ? ('refused' as const) : error),
+      ),
+    );
+    for (const upload of uploads) upload.push(Buffer.from('%PDF-1.4\n', 'latin1'));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    for (const upload of uploads) {
+      upload.push(Buffer.from('ok\n(fake score)', 'latin1'));
+      upload.push(null);
+    }
+    const outcomes = await Promise.all(submissions);
+    return {
+      admitted: outcomes.filter((outcome) => outcome === 'admitted').length,
+      refused: outcomes.filter((outcome) => outcome === 'refused').length,
+      directoriesOnDisk: (await readdir(workRoot)).length,
+    };
+  }
+
+  it('uploads still streaming in count against the QUEUE cap — a slow-upload fleet cannot pass a cap of one', async () => {
+    expect(await slowUploadFleet({ maxQueuedJobs: 1 })).toEqual({
+      admitted: 1,
+      refused: 4,
+      directoriesOnDisk: 1, // the refused four left nothing on disk
+    });
+  });
+
+  it('uploads still streaming in count against the LIVE cap too', async () => {
+    expect(await slowUploadFleet({ maxLiveJobs: 1 })).toEqual({
+      admitted: 1,
+      refused: 4,
+      directoriesOnDisk: 1,
+    });
+  });
+
   it('deleting a RUNNING job kills the engine and removes the directory before the entry goes', async () => {
     const store = await makeStore();
     const job = await store.submit('slow.pdf', fakePdf('slow'));

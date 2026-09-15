@@ -17,7 +17,8 @@
 #   VM ceiling and still leaves ~2 GB for the OS, Caddy, and page cache.
 #
 # Requires a .env file next to this compose file:  OMR_DOMAIN=omr.example.com
-# (or the sslip.io fallback — see Caddyfile and DEPLOY.md).
+# (or the sslip.io fallback — see Caddyfile and DEPLOY.md) and CORS_ORIGIN=<the web
+# app's origin(s), comma-separated> — the service refuses to start without the latter.
 
 services:
   omr:

@@ -65,6 +65,23 @@ switch (effectiveScenario) {
     console.log('\tat org.audiveris.omr.sheet.Part.createDummyPart(Part.java:359)');
     console.log('Voice excess 1/8 at measure 12 — no correct rhythm could be found');
     break;
+  case 'rhythms-then-fatal':
+    // A rhythm abort followed by a fatal-looking line: the specific class still wins over
+    // the crash branch, which must stay LAST.
+    console.log('Could not load the rest');
+    console.log('Voice excess 1/8 at measure 12 — no correct rhythm could be found');
+    console.log('Exception in thread "main" java.lang.IllegalStateException: after the abort');
+    break;
+  case 'unreadable-then-fatal':
+    console.log('Could not load input as a score');
+    console.log('Exception in thread "main" java.lang.IllegalStateException: after the refusal');
+    break;
+  case 'warn-noise-only':
+    // WARN-level exception names, no rhythm text, no output: not a crash — "produced no
+    // output" is the honest answer, and a bare exception name must not become one.
+    console.log('WARN [book] PartwiseBuilder.java:3244 | Error visiting System#2 in {Page#1.2}');
+    console.log('java.lang.NullPointerException: Cannot invoke "Part.getFirstMeasure()"');
+    break;
   case 'oom':
     console.log('Exception in thread "main" java.lang.OutOfMemoryError: Java heap space');
     break;

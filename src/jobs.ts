@@ -161,8 +161,14 @@ export class JobStore {
     scoreName: string,
     writeUpload: (path: string) => Promise<void>,
   ): Promise<Job> {
-    if (this.queue.length >= (this.options.maxQueuedJobs ?? 25)) throw new QueueFullError();
-    if (this.jobs.size >= (this.options.maxLiveJobs ?? 40)) throw new QueueFullError();
+    // Both caps count the uploads still streaming in: the check runs before the body
+    // arrives, and a body can take minutes, so without them any number of slow uploads
+    // passes a cap of one (review round 2, 2026-09-15 — five admitted against a cap of 1).
+    const pendingCount = this.pendingDirectories.size;
+    if (this.queue.length + pendingCount >= (this.options.maxQueuedJobs ?? 25))
+      throw new QueueFullError();
+    if (this.jobs.size + pendingCount >= (this.options.maxLiveJobs ?? 40))
+      throw new QueueFullError();
     const id = randomUUID();
     const workDirectory = join(this.options.workRoot, id);
     this.pendingDirectories.add(id);
@@ -336,7 +342,7 @@ export class JobStore {
   /** The engine's own per-run log files newer than this run's start — and ONLY files
    *  named the way Audiveris names them (`20260914T093700.log`), so a mistyped directory
    *  (the profile root, say) loses nothing else. A log the engine still holds open at
-   *  this moment is left for the operator's periodic wipe (deploy/home/README.md): the
+   *  this moment stays until the operator deletes it by hand (deploy/home/README.md): the
    *  next run's window opens at ITS start, so it will not see this one. With a
    *  concurrency above one, a sibling run's live log is inside the window too — the
    *  engine is at concurrency 1 everywhere this service is deployed. */

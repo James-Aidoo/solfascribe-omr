@@ -55,11 +55,27 @@ account the one critical finding in the estate. Three things, in order:
 
 1. **Run it under an account with nothing to lose.** Create a standard (non-administrator)
    local user — Settings → Accounts → Other users → Add — and run `start-home.ps1` and
-   the Audiveris install as that user (a scheduled task with `/RU <user>`, or a second
-   session). Your own profile, browser sessions and the tunnel credentials in
-   `%USERPROFILE%\.cloudflared` are then out of the engine's reach. Alternatively run the
-   repo's Docker image (it already runs as an unprivileged user) with only
+   the Audiveris install as that user. Your own profile, browser sessions and the tunnel
+   credentials in `%USERPROFILE%\.cloudflared` are then out of the engine's reach. The
+   recipe that works on Windows 11, from an admin PowerShell (`omr` is the account):
+
+   ```powershell
+   schtasks /Create /TN "SolfaScribe OMR" /SC ONSTART /RU omr /RP * /RL LIMITED /TR "cmd /c powershell -NoProfile -ExecutionPolicy Bypass -File D:\solfascribe-omr\deploy\home\start-home.ps1 > D:\solfascribe-omr\deploy\home\omr-service.log 2>&1"
+   schtasks /Run /TN "SolfaScribe OMR"
+   schtasks /Query /TN "SolfaScribe OMR" /V /FO LIST | Select-String "Status|Last Result"   # 267009 = running
+   ```
+
+   Three things a standard account lacks, each of which stopped the task once: it needs
+   the **"Log on as a batch job"** right (`secpol.msc` → Local Policies → User Rights
+   Assignment → add the user; `schtasks /Create` warns "Batch logon privilege needs to be
+   enabled" without it), its PowerShell refuses script files until the action carries
+   **`-ExecutionPolicy Bypass`**, and its profile is unreadable from your account, so
+   point the task's log at a folder both can read. Set `AUDIVERIS_LOG_DIR` in `home.env`
+   to THAT user's `%APPDATA%\AudiverisLtd\audiveris\log`, and keep `cloudflared` under
+   your own account (its Startup entry then starts only the tunnel). Alternatively run
+   the repo's Docker image (it already runs as an unprivileged user) with only
    `127.0.0.1:8480` published, and keep `cloudflared` on the host.
+
 2. **Bind to loopback.** The service now defaults to `HOST=127.0.0.1`; the tunnel dials
    `localhost:8480`, so nothing needs a wider bind. Remove any Windows Firewall inbound
    rule that allowed `node.exe` on the Public profile (Windows Defender Firewall →

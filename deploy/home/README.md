@@ -76,6 +76,14 @@ account the one critical finding in the estate. Three things, in order:
    the repo's Docker image (it already runs as an unprivileged user) with only
    `127.0.0.1:8480` published, and keep `cloudflared` on the host.
 
+   **The OCR language files must be reachable by that account.** Audiveris reads Tesseract's
+   `*.traineddata` from the profile's `AppData\Roaming\AudiverisLtdudiveris\config	essdata`
+   — a folder the new account does not have — and says nothing when it finds none: every
+   scan then exports no lyrics, no credits and every part named "Voice" (2026-09-20, three
+   days of it). Put the standard `tessdata` models (never `tessdata_best`) in a folder every
+   account can read and set `TESSDATA_PREFIX=<that folder>` in `home.env`; the engine honours
+   it. The check: an export whose parts are all named "Voice" has no OCR.
+
 2. **Bind to loopback.** The service now defaults to `HOST=127.0.0.1`; the tunnel dials
    `localhost:8480`, so nothing needs a wider bind. Remove any Windows Firewall inbound
    rule that allowed `node.exe` on the Public profile (Windows Defender Firewall →

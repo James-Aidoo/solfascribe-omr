@@ -65,6 +65,18 @@ account the one critical finding in the estate. Three things, in order:
    schtasks /Query /TN "SolfaScribe OMR" /V /FO LIST | Select-String "Status|Last Result"   # 267009 = running
    ```
 
+   To stop or restart it (after a `home.env` change, say), do not rely on `schtasks /End`:
+   it ends only the task's root `cmd`, and the PowerShell → npm → tsx → node tree under it
+   lives on holding the port and the log, so the next `/Run` dies within a minute. Kill the
+   tree from its PowerShell root, then run the task again:
+
+   ```powershell
+   $id = (Get-NetTCPConnection -LocalPort 8480 -State Listen).OwningProcess
+   do { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$id"; $id = $p.ParentProcessId } until ($p.Name -eq 'powershell.exe')
+   taskkill /PID $p.ProcessId /T /F
+   schtasks /Run /TN "SolfaScribe OMR"
+   ```
+
    Three things a standard account lacks, each of which stopped the task once: it needs
    the **"Log on as a batch job"** right (`secpol.msc` → Local Policies → User Rights
    Assignment → add the user; `schtasks /Create` warns "Batch logon privilege needs to be

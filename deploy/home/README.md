@@ -103,11 +103,16 @@ account the one critical finding in the estate. Three things, in order:
    with the old `0.0.0.0` bind that rule let any LAN the laptop joined reach the service
    directly, around Cloudflare.
 3. **Rate-limit at the edge.** Cloudflare → the zone → Security → Security rules → Rate
-   limiting rules: hostname `omr.<your-domain>`, path starts with `/jobs`, method `POST`,
-   more than 5 requests per 10 seconds per IP → Block. A conversion takes minutes; no
-   reader posts five in ten seconds. (On the Free plan the zone allows ONE rate-limiting
-   rule; if the till's rule already uses it, widen that rule's hostname expression to
-   cover both hosts instead.)
+   limiting rules, scoped by PATH: the Free plan's rate-limiting rules cannot match a
+   hostname (the builder offers only URI Path among raw fields, and the expression editor
+   rejects `http.host` for this rule type — found building the rule on 2026-09-16), so the
+   expression is `starts_with(http.request.uri.path, "/jobs")`, more than 20 requests per
+   10 seconds per IP → Block. A conversion takes minutes; no reader posts twenty in ten
+   seconds. On the Free plan the zone allows ONE such rule, so if the zone is shared (a
+   web app, a till), OR the other services' own prefixes into the same expression — one
+   rule has one threshold, which then serves them all — and keep every service's paths
+   distinct from the web app's, since a path-only rule cannot tell the hosts apart. Any
+   new service route must be added to the expression.
 
 Also set `AUDIVERIS_LOG_DIR` in `home.env` to Audiveris's own log directory —
 `%APPDATA%\AudiverisLtd\audiveris\log` on Windows — so each run's engine log (it holds

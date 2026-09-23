@@ -129,8 +129,10 @@ Two documented paths, both free:
   trade while the operator is also the main user. (Hugging Face Docker Spaces, the old
   free dev path, went PRO-only in mid-2026 — the section above.)
 - **Production**: an Oracle Cloud Always-Free Ampere A1 VM (2 OCPU / 12 GB, arm64)
-  behind Caddy with automatic HTTPS — the whole bundle (compose file, Caddyfile,
-  idempotent `setup.sh`, and an honest step-by-step including Oracle's signup and
+  with the edge of your choice — the same Cloudflare named tunnel the home path uses (no
+  port opened, no certificate; the SolfaScribe instance's choice) or Caddy with automatic
+  HTTPS on the VM's own ports — the whole bundle (compose files, Caddyfile, connector
+  config, idempotent `setup.sh`, and an honest step-by-step including Oracle's signup and
   capacity friction) lives in [`deploy/oracle/`](./deploy/oracle/DEPLOY.md). CI builds
   the image on a native arm64 runner so every PR proves that target keeps working.
 

@@ -1,0 +1,27 @@
+# The Cloudflare named-tunnel edge (OMR_EDGE=tunnel) — the SolfaScribe instance's choice
+# (2026-09-23): the connector dials OUT to Cloudflare and serves the hostname from the
+# compose network, so the VM opens no port at all, mints no certificate, keeps the edge's
+# own proxying and rate limit in front of it, and the app's URL does not change when the
+# service moves hosts — the same model the home path runs, in a container.
+#
+# Needs, in ./cloudflared/ next to this file (gitignored — DEPLOY.md says how to make them):
+#   config.yml         from config.example.yml, with the tunnel id and the hostname
+#   <tunnel-id>.json   the credentials `cloudflared tunnel create` wrote — a SECRET; copy it
+#                      with scp, never paste it
+# The connector runs as the image's unprivileged user (uid 65532); setup.sh gives that user
+# the folder and keeps everyone else out of it.
+#
+# Applied on top of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d --build
+
+services:
+  cloudflared:
+    # Pinned: the connector is the one component that talks to the outside, and a moving
+    # `latest` is not something to discover at 3 a.m. Bump it on purpose.
+    image: cloudflare/cloudflared:2026.9.1
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - omr

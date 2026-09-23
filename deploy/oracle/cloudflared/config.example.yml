@@ -1,0 +1,13 @@
+# The connector's config for the tunnel edge (docker-compose.tunnel.yml). Copy to
+# config.yml beside it and fill in the two placeholders:
+#   <tunnel-id>      the id `cloudflared tunnel create <name>` printed (also the name of the
+#                    credentials file it wrote — copy that file here with scp)
+#   omr.example.com  the hostname the CNAME routes to this tunnel
+# The service is reached on the compose network by its service name, so the origin is
+# always http://omr:8480 — nothing on the VM's host ports.
+tunnel: <tunnel-id>
+credentials-file: /etc/cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: omr.example.com
+    service: http://omr:8480
+  - service: http_status:404

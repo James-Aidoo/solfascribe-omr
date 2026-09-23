@@ -2,9 +2,16 @@
 # arm64, Ubuntu 24.04). The image is built ON the VM from this repo — CI publishes no
 # registry image, and a build-on-VM keeps the supply chain to "the repo you cloned".
 #
+# This file is the SERVICE alone; the edge that reaches it is an overlay, chosen by
+# OMR_EDGE in the .env file next to this one (setup.sh applies it):
+#   docker-compose.tunnel.yml — a Cloudflare named tunnel (no port opened, no certificate;
+#                               the SolfaScribe instance's choice, see DEPLOY.md)
+#   docker-compose.caddy.yml  — Caddy with Let's Encrypt on ports 80/443 (any host without
+#                               Cloudflare)
+#
 # Memory arithmetic for the 12 GB box (why heap 6g and mem_limit 10g):
 #   OS + sshd + docker daemon        ~1.0 GB
-#   Caddy                            ~0.1 GB
+#   the edge (Caddy or cloudflared)  ~0.1 GB
 #   Node glue service (tsx)          ~0.2 GB
 #   Audiveris JVM heap               6.0 GB   (OMR_JAVA_MAX_HEAP below)
 #   JVM overhead (metaspace, GC,
@@ -14,11 +21,11 @@
 #     counted by the JVM heap)       ~1.0 GB
 #   ------------------------------------------
 #   worst-case working set          ~9.0 GB  → mem_limit 10g caps a runaway below the
-#   VM ceiling and still leaves ~2 GB for the OS, Caddy, and page cache.
+#   VM ceiling and still leaves ~2 GB for the OS, the edge, and page cache.
 #
-# Requires a .env file next to this compose file:  OMR_DOMAIN=omr.example.com
-# (or the sslip.io fallback — see Caddyfile and DEPLOY.md) and CORS_ORIGIN=<the web
-# app's origin(s), comma-separated> — the service refuses to start without the latter.
+# Requires a .env file next to this compose file with CORS_ORIGIN=<the web app's
+# origin(s), comma-separated> — the service refuses to start without it — plus the
+# overlay's own variables (see each overlay's header and DEPLOY.md).
 
 services:
   omr:
@@ -41,26 +48,17 @@ services:
       # this image: after the first real run, `docker compose exec omr find /home/omr
       # -name '*.log'` and correct this line if the files are elsewhere.
       AUDIVERIS_LOG_DIR: /home/omr/.local/share/AudiverisLtd/audiveris/log
+      # The OCR language files: the image installs Ubuntu's tesseract-ocr-eng package, whose
+      # models live here. Without a reachable tessdata folder the engine says nothing and
+      # every scan comes back wordless with every part named "Voice" (the home path lost
+      # three days to exactly that, 2026-09-17 → 20). ASSUMED for this image until the
+      # first real scan proves it — DEPLOY.md's verify step checks the part names.
+      TESSDATA_PREFIX: /usr/share/tesseract-ocr/5/tessdata
     volumes:
       - job-work:/tmp/solfascribe-omr
-    # Not published on the host — only Caddy reaches it, on the compose network.
+    # Not published on the host — only the edge reaches it, on the compose network.
     expose:
       - "8480"
 
-  caddy:
-    image: caddy:2
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      OMR_DOMAIN: ${OMR_DOMAIN:?set OMR_DOMAIN in deploy/oracle/.env (see DEPLOY.md)}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data # Let's Encrypt certificates — must persist across restarts
-      - caddy-config:/config
-
 volumes:
   job-work:
-  caddy-data:
-  caddy-config:

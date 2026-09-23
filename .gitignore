@@ -3,3 +3,6 @@ dist/
 *.log
 .env
 deploy/home/home.env
+# The tunnel edge's connector files: a credentials secret and a machine-specific config
+deploy/oracle/cloudflared/*.json
+deploy/oracle/cloudflared/config.yml

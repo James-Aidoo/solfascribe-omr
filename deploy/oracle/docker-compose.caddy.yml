@@ -1,0 +1,29 @@
+# The Caddy edge (OMR_EDGE=caddy): automatic HTTPS from Let's Encrypt over HTTP-01, on the
+# VM's own ports 80 and 443. For a host WITHOUT Cloudflare in front — the generic path.
+# Both firewalls must allow 80/443 (the VCN security list in the console, iptables on the
+# instance — setup.sh opens the latter for this edge), and OMR_DOMAIN must be a hostname
+# whose A record points at the VM's public IP (or the <ip>.sslip.io fallback — see the
+# Caddyfile and DEPLOY.md).
+#
+# Applied on top of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d --build
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      OMR_DOMAIN: ${OMR_DOMAIN:?set OMR_DOMAIN in deploy/oracle/.env (see DEPLOY.md)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # Let's Encrypt certificates — must persist across restarts
+      - caddy-config:/config
+    depends_on:
+      - omr
+
+volumes:
+  caddy-data:
+  caddy-config:

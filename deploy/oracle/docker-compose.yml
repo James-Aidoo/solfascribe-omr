@@ -43,17 +43,22 @@ services:
       # Unset in the service means `*`, which is a local-dev default, never a public one
       # (security review 2026-09-15).
       CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN in deploy/oracle/.env to your app's origin(s)}
-      # The engine's own log directory inside the container, swept after every run. The
-      # XDG path is what Audiveris uses on Linux by convention — ASSUMED, not verified on
-      # this image: after the first real run, `docker compose exec omr find /home/omr
-      # -name '*.log'` and correct this line if the files are elsewhere.
-      AUDIVERIS_LOG_DIR: /home/omr/.local/share/AudiverisLtd/audiveris/log
-      # The OCR language files: the image installs Ubuntu's tesseract-ocr-eng package, whose
-      # models live here. Without a reachable tessdata folder the engine says nothing and
-      # every scan comes back wordless with every part named "Voice" (the home path lost
-      # three days to exactly that, 2026-09-17 → 20). ASSUMED for this image until the
-      # first real scan proves it — DEPLOY.md's verify step checks the part names.
-      TESSDATA_PREFIX: /usr/share/tesseract-ocr/5/tessdata
+      # The engine's own log directory inside the container, swept after every run.
+      # VERIFIED 2026-09-24 on this image: Audiveris on Linux writes its per-run log under
+      # the XDG *cache* home, not the data home — `find /home/omr -name '*.log'` after the
+      # first scans listed .cache/AudiverisLtd/audiveris/log/<timestamp>.log, and the
+      # data-home path first assumed here (.local/share/…) swept nothing. Re-check after
+      # an engine bump.
+      AUDIVERIS_LOG_DIR: /home/omr/.cache/AudiverisLtd/audiveris/log
+      # The OCR language file: the image fetches the tesseract-ocr/tessdata 4.1.0
+      # eng.traineddata into /opt/tessdata (Dockerfile) — the one kind of file the engine's
+      # LEGACY Tesseract mode can load. Same value as the image's own ENV; stated here so
+      # the deployment reads complete. Without a usable file the engine says almost nothing
+      # (one WARN in its own log: "Could not initialize TessBaseAPI languages: eng in
+      # legacy mode") and every scan comes back wordless — the home path lost three days
+      # to a missing folder (2026-09-17 → 20) and the first Oracle scans a night to the
+      # wrong file (2026-09-24). DEPLOY.md's verify step checks a real scan's lyrics.
+      TESSDATA_PREFIX: /opt/tessdata
     volumes:
       - job-work:/tmp/solfascribe-omr
     # Not published on the host — only the edge reaches it, on the compose network.

@@ -89,12 +89,16 @@ account the one critical finding in the estate. Three things, in order:
    `127.0.0.1:8480` published, and keep `cloudflared` on the host.
 
    **The OCR language files must be reachable by that account.** Audiveris reads Tesseract's
-   `*.traineddata` from the profile's `AppData\Roaming\AudiverisLtdudiveris\config	essdata`
+   `*.traineddata` from the profile's `AppData\Roaming\AudiverisLtd\audiveris\config\tessdata`
    — a folder the new account does not have — and says nothing when it finds none: every
    scan then exports no lyrics, no credits and every part named "Voice" (2026-09-20, three
-   days of it). Put the standard `tessdata` models (never `tessdata_best`) in a folder every
-   account can read and set `TESSDATA_PREFIX=<that folder>` in `home.env`; the engine honours
-   it. The check: an export whose parts are all named "Voice" has no OCR.
+   days of it). Put the models from the `tesseract-ocr/tessdata` repository in a folder
+   every account can read and set `TESSDATA_PREFIX=<that folder>` in `home.env`; the
+   engine honours it. Never `tessdata_fast` or `tessdata_best`: Audiveris runs Tesseract in
+   legacy mode, which only the `tessdata` files carry — the others fail with one line in
+   the engine's log, "Could not initialize TessBaseAPI languages: eng in legacy mode", and
+   the scan is wordless (the Oracle image's first night, 2026-09-24). The check: an export
+   whose parts are all named "Voice" has no OCR.
 
 2. **Bind to loopback.** The service now defaults to `HOST=127.0.0.1`; the tunnel dials
    `localhost:8480`, so nothing needs a wider bind. Remove any Windows Firewall inbound

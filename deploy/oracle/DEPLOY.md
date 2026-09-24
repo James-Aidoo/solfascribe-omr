@@ -47,6 +47,13 @@ sitting — **create a budget alert**:
 
 Now anything that starts costing money emails you before it matters.
 
+A brand-new account can spend its first hours (sometimes a day) behind a banner reading
+"Your account provisioning is in progress", with the upgrade page hidden until it clears.
+Do not wait for it: Always Free works on the un-upgraded account, so create the instance
+(step 4) first and come back here when the banner is gone. The upgrade itself takes
+Oracle a day or two to confirm by email; the card sees a ~$100 authorization that is
+reversed at once.
+
 ## 3. Choose the edge — how the world reaches the service
 
 The service container never touches a host port; something in front of it does. Two
@@ -65,22 +72,48 @@ overlays, picked by `OMR_EDGE` in `deploy/oracle/.env`:
   a host without Cloudflare. Two firewalls to open, a certificate to keep renewing,
   and the VM's IP is the hostname's address.
 
-## 4. Create the instance — expect "out of capacity"
+## 4. Create the instance — the network first, then the machine
 
-Compute → Instances → **Create instance**:
+The console's create-instance wizard offers to make a network inline, but with that
+choice its public-address toggle is greyed out ("You must select a public subnet to
+assign a public IPv4 address" — the form cannot inspect a subnet that does not exist
+yet), and the plain "Create VCN" dialog makes an empty shell with no gateway and no
+subnets. So, as lived on 2026-09-23:
 
-- **Image**: Ubuntu 24.04 (aarch64).
-- **Shape**: `VM.Standard.A1.Flex`, **exactly 2 OCPU and 12 GB memory** — the
-  Always-Free ceiling. More is not free; less starves the JVM.
-- **Networking**: the default VCN it offers is fine; **assign a public IPv4 address**
-  (the tunnel edge needs it only so you can SSH in).
-- **SSH keys**: upload your public key (the `.pub` file, e.g. `~/.ssh/id_ed25519.pub`).
+**4a. The network, with the VCN wizard.** Menu → Networking → Virtual cloud networks →
+**Start VCN Wizard** → **Create VCN with Internet Connectivity** → Start VCN Wizard.
+Name it (say `solfascribe-vcn`), keep every default (10.0.0.0/16, a public and a private
+subnet, DNS on, no tags) → Next → Create. It builds the VCN, an internet gateway, the
+route table and the default security list (port 22 open) in one go.
 
-The trap: clicking Create frequently fails with **"Out of capacity"**. This is
-normal for A1 and can persist for days in busy regions. What works: retry at odd
-hours, try every availability domain the region has, and just keep clicking — people
-script this, but a few manual retries a day usually lands within a week in a
-low-demand region. (This is the main reason step 1 said to pick one.)
+**4b. The machine.** Menu → Compute → Instances → **Create instance**, a wizard of five
+sections:
+
+- **Basic information**: a name; leave the compartment and the availability domain. In
+  _Image and shape_ click **Change shape FIRST**: Virtual machine → Ampere →
+  `VM.Standard.A1.Flex`, **exactly 2 OCPUs and 12 GB** (the "Always Free-eligible" label
+  shows; more is not free, less starves the JVM). Then **Change image**: **Canonical
+  Ubuntu 24.04** — the plain family row, not "Minimal". The row holds both processor
+  builds and the console picks the aarch64 one for the shape you set (expand the row's
+  triangle to see the build's name; only the Minimal edition is listed per processor).
+  Leave the _Advanced options_ (metadata service, cloud-init, agents) alone.
+- **Security**: both switches off.
+- **Networking**: give the VNIC a name; **Select existing virtual cloud network** → the
+  wizard's VCN → the subnet whose name begins with "public subnet"; switch
+  **Automatically assign public IPv4 address** ON (it is live now); IPv6 off. Under
+  **Add SSH keys** choose **Paste public keys** and paste your `.pub` line (e.g. the
+  content of `~/.ssh/id_ed25519.pub`) — not "Generate a key pair for me", which hands
+  the private key to the browser instead of the machine you will SSH from.
+- **Storage**: defaults (the ~50 GB boot volume is inside the free 200 GB).
+- **Review**: shape 2 OCPU / 12 GB, image Ubuntu 24.04 aarch64, public IPv4 yes →
+  **Create**. "Provisioning" turns to "Running" within a couple of minutes.
+
+The trap: clicking Create can fail with **"Out of capacity"**. This is normal for A1
+and can persist for days in busy regions. Oracle's own remedies, in order: another
+availability domain (if the region has more than one), wait and retry (odd hours, a few
+times a day), and the Pay-As-You-Go upgrade of step 2. The wizard keeps your entries
+when you go back, so a retry is one more click. (This is the main reason step 1 said to
+pick a low-demand region.)
 
 ## 5. Note the public IP
 
@@ -92,8 +125,12 @@ Traffic to the VM passes **two** firewalls: the VCN security list (Oracle consol
 and iptables on the instance (`setup.sh` handles that one). Instance page → its subnet
 → the subnet's **security list** (usually "Default Security List for …"):
 
-- **Both edges**: port **22** already has a rule; tighten its source from `0.0.0.0/0`
-  to **your own IP** (`<your-ip>/32`) while you are here.
+- **Both edges**: port **22** already has a rule open to the world. Narrow its source to
+  `<your-ip>/32` ONLY if your address is fixed. On a connection whose public address
+  rotates without notice (carrier-grade NAT: Starlink, most mobile and many home ISPs)
+  that rule locks you out at the next rotation, with the console's serial connection as
+  the only way back. Leave it open otherwise — Oracle's Ubuntu images take keys only,
+  never passwords, and the tunnel edge exposes nothing else.
 - **Tunnel edge**: that is all. The connector dials out; nothing inbound is needed.
 - **Caddy edge**: **Add Ingress Rules** — source `0.0.0.0/0`, protocol TCP, destination
   port **80** (Let's Encrypt HTTP-01 validation + HTTPS redirect), and the same for
@@ -129,7 +166,13 @@ EOF
 
 Then do step 8 for your edge and run the script again; it is idempotent (re-running
 pulls the latest repo and rebuilds). The **first** `docker compose up --build` compiles
-Audiveris from source — expect 10–20 minutes.
+Audiveris from source — expect 15–30 minutes on the 2-OCPU A1.
+
+Two things a fresh box does: right after first boot it may still be running its own
+updates, and the script stops on "Could not get lock" / "Waiting for cache lock" — wait
+two minutes and run it again; and if the SSH session drops during the build, the build
+dies with it — reconnect and run the script again, Docker keeps every finished layer
+and resumes from there.
 
 To update later: `sudo bash /opt/solfascribe-omr/deploy/oracle/setup.sh` again.
 
@@ -159,14 +202,22 @@ sudo bash /opt/solfascribe-omr/deploy/oracle/setup.sh
 
 `setup.sh` hands the folder to the connector's own user and starts it; its log must
 say `Registered tunnel connection` (`docker compose … logs cloudflared`), and on the
-machine with the certificate `cloudflared tunnel info solfascribe-omr-oci` lists the
-connector. Nothing serves the hostname yet — the CNAME still points wherever it did.
+machine with the certificate `cloudflared tunnel info <tunnel-id>` lists a
+`linux_arm64` connector at the VM's address. Nothing serves the hostname yet — the
+CNAME still points wherever it did.
+
+**Address tunnels by id, never by name**, in every cloudflared command. The laptop's
+cloudflared 2026.7.2 resolved the NAME `solfascribe-omr-oci` to the older
+`solfascribe-omr` tunnel (2026-09-23): `tunnel info` printed the wrong tunnel's
+connector, and `route dns` reported the hostname "already configured" and wrote
+nothing — both looking like success. `cloudflared tunnel list` prints the ids, and the
+NAME line of `tunnel info <id>` is the check that the id was the right one.
 
 **The cutover** is one command on the machine with the certificate, and it is also
-the rollback (run it with the other tunnel's name):
+the rollback (run it with the other tunnel's id):
 
 ```bash
-cloudflared tunnel route dns --overwrite-dns solfascribe-omr-oci omr.example.com
+cloudflared tunnel route dns --overwrite-dns <tunnel-id> omr.example.com
 ```
 
 `--overwrite-dns` is what lets it replace a CNAME that already points at another
@@ -196,19 +247,30 @@ curl https://omr.example.com/healthz
 If it hangs on the Caddy edge: VCN rule missing (step 6) or iptables not applied
 (re-run `setup.sh`); if TLS fails: DNS not propagated yet, or port 80 blocked (HTTP-01
 needs it). On the tunnel edge a 502 from Cloudflare means the connector is up but
-cannot reach `omr:8480` — `docker compose … ps` should show the service healthy.
+cannot reach `omr:8480` — `docker compose … ps` should show the service healthy — and
+a Cloudflare error 1033 means no connector is registered for the tunnel the CNAME
+names (wrong id in step 8a, or the connector is down).
 
-Then one **real scan**, and two checks on it, both about things assumed rather than
-proven on this image:
+Then one **real scan** of a score with words under the notes, and two checks on it.
+Both were assumptions until 2026-09-24, when the first Oracle scans failed both:
 
-- **OCR found its language files**: the exported MusicXML names its parts
-  (`<part-name>` is not "Voice") and carries the title. A wordless export with every
-  part named "Voice" means Tesseract's models were not where `TESSDATA_PREFIX` says
-  (the compose file points it at Ubuntu's package folder) — the engine says nothing
-  when they are missing, and the home path lost three days to exactly this.
-- **The engine's log is swept**: `docker compose … exec omr find /home/omr -name
-  '*.log'` lists nothing. If it lists a log elsewhere, point `AUDIVERIS_LOG_DIR` there
-  (the compose file assumes Audiveris's Linux convention).
+- **OCR works**: the scan shows its lyrics, and the exported MusicXML names its parts
+  (`<part-name>` is not "Voice") and carries the title. A wordless result means the
+  engine could not use its language file, and the engine's own log says so in ONE line
+  — `TesseractOrder. Could not initialize TessBaseAPI languages: eng in legacy mode` —
+  with nothing else complaining. Audiveris runs Tesseract in legacy mode, so the file
+  must come from the `tesseract-ocr/tessdata` repository; the image fetches exactly
+  that one, pinned and checksummed (Dockerfile). Ubuntu's `tesseract-ocr-eng` package,
+  which the first image installed instead, ships the LSTM-only "fast" model, and the
+  legacy engine refuses it. The engine's log on a failing box is under the folder the
+  next check names.
+- **The engine's log is swept**: from `deploy/oracle/`,
+  `sudo docker compose -f docker-compose.yml -f docker-compose.tunnel.yml exec omr find /home/omr -name '*.log'`
+  lists nothing. Run it from that directory: from anywhere else compose finds no file
+  and the command prints nothing either, so an empty answer means something only
+  there. Audiveris on Linux writes its per-run log under
+  `~/.cache/AudiverisLtd/audiveris/log/`, which is what `AUDIVERIS_LOG_DIR` names; the
+  data-home path first assumed there swept nothing.
 
 ## 10. Point SolfaScribe at it
 

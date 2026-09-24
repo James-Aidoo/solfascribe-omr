@@ -18,17 +18,22 @@ what the [Oracle production path](../oracle/DEPLOY.md) is for.
 
    ```powershell
    cloudflared tunnel login                       # pick your domain's zone
-   cloudflared tunnel create solfascribe-omr      # note the tunnel id
-   cloudflared tunnel route dns solfascribe-omr omr.<your-domain>
+   cloudflared tunnel create solfascribe-omr      # prints the tunnel id — use THAT below
+   cloudflared tunnel route dns <tunnel-id> omr.<your-domain>
    # copy deploy/home/cloudflared-config.example.yml to %USERPROFILE%\.cloudflared\config.yml
    # and fill in the tunnel id + credentials path
    ```
+
+   Address the tunnel by its **id** in every `cloudflared` command, never by name:
+   cloudflared 2026.7.2 resolved a name to the wrong tunnel once two tunnels shared a
+   prefix (2026-09-23, `deploy/oracle/DEPLOY.md` step 8a) — `tunnel info <tunnel-id>`
+   prints the NAME back, which is the check.
 
 4. Run both (two terminals, or the scheduled tasks below):
 
    ```powershell
    powershell -File deploy/home/start-home.ps1    # the service on :8480
-   cloudflared tunnel run solfascribe-omr         # the edge connection
+   cloudflared tunnel run <tunnel-id>             # the edge connection
    ```
 
 5. Verify from anywhere: `https://omr.<your-domain>/healthz`.
@@ -39,12 +44,12 @@ Two routes; the Startup folder needs no admin rights:
 
 - **Startup folder** (no admin): drop a `solfascribe-omr.cmd` into
   `shell:startup` that hidden-launches both `start-home.ps1` and
-  `cloudflared tunnel run solfascribe-omr` via `Start-Process -WindowStyle Hidden`.
+  `cloudflared tunnel run <tunnel-id>` via `Start-Process -WindowStyle Hidden`.
 - **Scheduled tasks** (needs an elevated shell):
 
   ```powershell
   schtasks /Create /TN "solfascribe-omr service" /SC ONLOGON /TR "powershell -WindowStyle Hidden -File <repo>\deploy\home\start-home.ps1"
-  schtasks /Create /TN "solfascribe-omr tunnel"  /SC ONLOGON /TR "cloudflared tunnel run solfascribe-omr"
+  schtasks /Create /TN "solfascribe-omr tunnel"  /SC ONLOGON /TR "cloudflared tunnel run <tunnel-id>"
   ```
 
 ## Keep the machine safe — read this before publishing the tunnel
@@ -89,12 +94,16 @@ account the one critical finding in the estate. Three things, in order:
    `127.0.0.1:8480` published, and keep `cloudflared` on the host.
 
    **The OCR language files must be reachable by that account.** Audiveris reads Tesseract's
-   `*.traineddata` from the profile's `AppData\Roaming\AudiverisLtdudiveris\config	essdata`
+   `*.traineddata` from the profile's `AppData\Roaming\AudiverisLtd\audiveris\config\tessdata`
    — a folder the new account does not have — and says nothing when it finds none: every
    scan then exports no lyrics, no credits and every part named "Voice" (2026-09-20, three
-   days of it). Put the standard `tessdata` models (never `tessdata_best`) in a folder every
-   account can read and set `TESSDATA_PREFIX=<that folder>` in `home.env`; the engine honours
-   it. The check: an export whose parts are all named "Voice" has no OCR.
+   days of it). Put the models from the `tesseract-ocr/tessdata` repository in a folder
+   every account can read and set `TESSDATA_PREFIX=<that folder>` in `home.env`; the
+   engine honours it. Never `tessdata_fast` or `tessdata_best`: Audiveris runs Tesseract in
+   legacy mode, which only the `tessdata` files carry — the others fail with one line in
+   the engine's log, "Could not initialize TessBaseAPI languages: eng in legacy mode", and
+   the scan is wordless (the Oracle image's first night, 2026-09-24). The check: an export
+   whose parts are all named "Voice" has no OCR.
 
 2. **Bind to loopback.** The service now defaults to `HOST=127.0.0.1`; the tunnel dials
    `localhost:8480`, so nothing needs a wider bind. Remove any Windows Firewall inbound

@@ -55,7 +55,8 @@ services:
       # LEGACY Tesseract mode can load. Same value as the image's own ENV; stated here so
       # the deployment reads complete. Without a usable file the engine says almost nothing
       # (one WARN in its own log: "Could not initialize TessBaseAPI languages: eng in
-      # legacy mode") and every scan comes back wordless — the home path lost three days
+      # legacy mode" — a log the service sweeps after every run, so read it by running the
+      # engine by hand, DEPLOY.md step 9) and every scan comes back wordless — the home path lost three days
       # to a missing folder (2026-09-17 → 20) and the first Oracle scans a night to the
       # wrong file (2026-09-24). DEPLOY.md's verify step checks a real scan's lyrics.
       TESSDATA_PREFIX: /opt/tessdata

@@ -19,4 +19,9 @@ MODIFY Audiveris itself, you must publish your modified source.
 
 ## Tesseract OCR (Apache-2.0)
 
-The image installs Tesseract OCR and its English traineddata from Debian packages.
+The image bundles Tesseract OCR and Leptonica as the
+[bytedeco](https://github.com/bytedeco/javacpp-presets) native builds inside the Audiveris
+distribution it compiles (both Apache-2.0), and fetches the English language file
+`eng.traineddata` from the [tesseract-ocr/tessdata](https://github.com/tesseract-ocr/tessdata)
+repository (Apache-2.0), pinned by the `TESSDATA_RELEASE` build argument and checksummed in
+the [Dockerfile](./Dockerfile). No Tesseract package is installed from the distribution.

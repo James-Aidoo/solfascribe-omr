@@ -18,17 +18,22 @@ what the [Oracle production path](../oracle/DEPLOY.md) is for.
 
    ```powershell
    cloudflared tunnel login                       # pick your domain's zone
-   cloudflared tunnel create solfascribe-omr      # note the tunnel id
-   cloudflared tunnel route dns solfascribe-omr omr.<your-domain>
+   cloudflared tunnel create solfascribe-omr      # prints the tunnel id — use THAT below
+   cloudflared tunnel route dns <tunnel-id> omr.<your-domain>
    # copy deploy/home/cloudflared-config.example.yml to %USERPROFILE%\.cloudflared\config.yml
    # and fill in the tunnel id + credentials path
    ```
+
+   Address the tunnel by its **id** in every `cloudflared` command, never by name:
+   cloudflared 2026.7.2 resolved a name to the wrong tunnel once two tunnels shared a
+   prefix (2026-09-23, `deploy/oracle/DEPLOY.md` step 8a) — `tunnel info <tunnel-id>`
+   prints the NAME back, which is the check.
 
 4. Run both (two terminals, or the scheduled tasks below):
 
    ```powershell
    powershell -File deploy/home/start-home.ps1    # the service on :8480
-   cloudflared tunnel run solfascribe-omr         # the edge connection
+   cloudflared tunnel run <tunnel-id>             # the edge connection
    ```
 
 5. Verify from anywhere: `https://omr.<your-domain>/healthz`.
@@ -39,12 +44,12 @@ Two routes; the Startup folder needs no admin rights:
 
 - **Startup folder** (no admin): drop a `solfascribe-omr.cmd` into
   `shell:startup` that hidden-launches both `start-home.ps1` and
-  `cloudflared tunnel run solfascribe-omr` via `Start-Process -WindowStyle Hidden`.
+  `cloudflared tunnel run <tunnel-id>` via `Start-Process -WindowStyle Hidden`.
 - **Scheduled tasks** (needs an elevated shell):
 
   ```powershell
   schtasks /Create /TN "solfascribe-omr service" /SC ONLOGON /TR "powershell -WindowStyle Hidden -File <repo>\deploy\home\start-home.ps1"
-  schtasks /Create /TN "solfascribe-omr tunnel"  /SC ONLOGON /TR "cloudflared tunnel run solfascribe-omr"
+  schtasks /Create /TN "solfascribe-omr tunnel"  /SC ONLOGON /TR "cloudflared tunnel run <tunnel-id>"
   ```
 
 ## Keep the machine safe — read this before publishing the tunnel

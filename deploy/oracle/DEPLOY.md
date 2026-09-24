@@ -128,9 +128,9 @@ and iptables on the instance (`setup.sh` handles that one). Instance page → it
 - **Both edges**: port **22** already has a rule open to the world. Narrow its source to
   `<your-ip>/32` ONLY if your address is fixed. On a connection whose public address
   rotates without notice (carrier-grade NAT: Starlink, most mobile and many home ISPs)
-  that rule locks you out at the next rotation, with the console's serial connection as
-  the only way back. Leave it open otherwise — Oracle's Ubuntu images take keys only,
-  never passwords, and the tunnel edge exposes nothing else.
+  that rule locks you out at the next rotation, and the way back in is editing the rule
+  in the console, every time. Leave it open otherwise — Oracle's Ubuntu images take keys
+  only, never passwords, and the tunnel edge exposes nothing else.
 - **Tunnel edge**: that is all. The connector dials out; nothing inbound is needed.
 - **Caddy edge**: **Add Ingress Rules** — source `0.0.0.0/0`, protocol TCP, destination
   port **80** (Let's Encrypt HTTP-01 validation + HTTPS redirect), and the same for
@@ -262,13 +262,24 @@ Both were assumptions until 2026-09-24, when the first Oracle scans failed both:
   must come from the `tesseract-ocr/tessdata` repository; the image fetches exactly
   that one, pinned and checksummed (Dockerfile). Ubuntu's `tesseract-ocr-eng` package,
   which the first image installed instead, ships the LSTM-only "fast" model, and the
-  legacy engine refuses it. The engine's log on a failing box is under the folder the
-  next check names.
+  legacy engine refuses it. The service sweeps the engine's log after EVERY run, done or
+  failed, so that line is not lying around to be read afterwards; to see it, run the
+  engine by hand inside the container — its stdout carries the log:
+
+  ```bash
+  sudo docker cp score.pdf oracle-omr-1:/tmp/score.pdf     # the container compose names after this folder
+  sudo docker compose -f docker-compose.yml -f docker-compose.tunnel.yml exec omr /opt/audiveris/bin/Audiveris -batch -export -output /tmp/check /tmp/score.pdf
+  ```
+
+  `Installed OCR languages: eng` at the top and no `Could not initialize` line after
+  `TEXTS` is the healthy shape.
+
 - **The engine's log is swept**: from `deploy/oracle/`,
   `sudo docker compose -f docker-compose.yml -f docker-compose.tunnel.yml exec omr find /home/omr/.cache/AudiverisLtd -name '*.log'`
-  lists nothing. Run it from that directory: from anywhere else compose finds no file
-  and the command prints nothing either, so an empty answer means something only
-  there. Audiveris on Linux writes its per-run log under
+  lists nothing. Run it from that directory: from anywhere else compose reports the
+  missing file on stderr — which a `2>/dev/null` copied from elsewhere swallows — and
+  prints nothing to stdout, so an empty answer means something only there. Audiveris on
+  Linux writes its per-run log under
   `~/.cache/AudiverisLtd/audiveris/log/`, which is what `AUDIVERIS_LOG_DIR` names; the
   data-home path first assumed there swept nothing. (A bare `find /home/omr -name
   '*.log'` also lists npm's own debug log from the container's start — not the engine's,

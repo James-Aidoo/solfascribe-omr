@@ -265,12 +265,14 @@ Both were assumptions until 2026-09-24, when the first Oracle scans failed both:
   legacy engine refuses it. The engine's log on a failing box is under the folder the
   next check names.
 - **The engine's log is swept**: from `deploy/oracle/`,
-  `sudo docker compose -f docker-compose.yml -f docker-compose.tunnel.yml exec omr find /home/omr -name '*.log'`
+  `sudo docker compose -f docker-compose.yml -f docker-compose.tunnel.yml exec omr find /home/omr/.cache/AudiverisLtd -name '*.log'`
   lists nothing. Run it from that directory: from anywhere else compose finds no file
   and the command prints nothing either, so an empty answer means something only
   there. Audiveris on Linux writes its per-run log under
   `~/.cache/AudiverisLtd/audiveris/log/`, which is what `AUDIVERIS_LOG_DIR` names; the
-  data-home path first assumed there swept nothing.
+  data-home path first assumed there swept nothing. (A bare `find /home/omr -name
+  '*.log'` also lists npm's own debug log from the container's start — not the engine's,
+  and not swept; that is why the search is scoped.)
 
 ## 10. Point SolfaScribe at it
 

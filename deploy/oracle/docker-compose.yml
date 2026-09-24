@@ -47,8 +47,8 @@ services:
       # VERIFIED 2026-09-24 on this image: Audiveris on Linux writes its per-run log under
       # the XDG *cache* home, not the data home — `find /home/omr -name '*.log'` after the
       # first scans listed .cache/AudiverisLtd/audiveris/log/<timestamp>.log, and the
-      # data-home path first assumed here (.local/share/…) swept nothing. Re-check after
-      # an engine bump.
+      # data-home path first assumed here (.local/share/…) swept nothing. With this value a
+      # real scan left nothing under .cache/AudiverisLtd. Re-check after an engine bump.
       AUDIVERIS_LOG_DIR: /home/omr/.cache/AudiverisLtd/audiveris/log
       # The OCR language file: the image fetches the tesseract-ocr/tessdata 4.1.0
       # eng.traineddata into /opt/tessdata (Dockerfile) — the one kind of file the engine's

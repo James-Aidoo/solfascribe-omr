@@ -11,14 +11,18 @@
 #  - Every apt package (fontconfig, curl) is arch-native from Ubuntu's repos.
 #  - The NodeSource setup script detects the architecture and serves arm64 debs.
 #  - The Audiveris build is Java bytecode plus bytedeco tesseract/leptonica natives; its
-#    5.10.2 build.gradle deliberately bundles BOTH linux-x86_64 and linux-arm64 native
+#    build.gradle (5.10.2 and 5.11.0 alike) deliberately bundles BOTH linux-x86_64 and linux-arm64 native
 #    classifiers on Linux, so the installDist output runs on either architecture
 #    regardless of which one built it. No URL or arch string below is hardcoded.
 
-# Audiveris 5.10.2 declares theMinJavaVersion 25 — a 21 JDK fails compileJava with
-# "invalid source release: 25".
+# Audiveris declares theMinJavaVersion 25 (5.10.2 and 5.11.0) — a 21 JDK fails compileJava
+# with "invalid source release: 25".
+# 5.11.0 (2026-07-11) replaced 5.10.2 after a ten-score sweep on the production VM
+# (2026-10-25): bar-length misreads 53 -> 42, warnings 186 -> 177, lyric syllables placed
+# 2108 -> 2132, no bars or notes lost, same run time. Rolling back is this one value
+# (and the GDK_SCALE line below may stay — 5.10.2 ignores it).
 FROM eclipse-temurin:25-jdk AS audiveris-build
-ARG AUDIVERIS_VERSION=5.10.2
+ARG AUDIVERIS_VERSION=5.11.0
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch ${AUDIVERIS_VERSION} https://github.com/Audiveris/audiveris.git /build
 WORKDIR /build
@@ -63,6 +67,13 @@ COPY src ./src
 COPY tsconfig.json ./
 
 ENV AUDIVERIS_CMD=/opt/audiveris/bin/Audiveris \
+    # REQUIRED from Audiveris 5.11.0 on. At start-up 5.11 asks GTK for the screen's HiDPI
+    # scale (WellKnowns.enableHiDpiScaling -> getGdkMaxScale, which loads libgtk-3 through
+    # JNA) unless GDK_SCALE is set. This image has no GTK, so the load throws
+    # UnsatisfiedLinkError — an Error, which the probe's `catch (Exception)` lets through —
+    # and the engine dies before it reads a page. With GDK_SCALE set, 5.11 takes it as the
+    # UI scale and never touches GTK; a batch run draws nothing, so 1 is the right value.
+    GDK_SCALE=1 \
     PORT=8480 \
     WORK_ROOT=/tmp/solfascribe-omr \
     # Where the engine finds its OCR language file (the fetch above).

@@ -14,8 +14,16 @@
  *    unreachable by any retry; clients need this failure class called out explicitly.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import {
+  DEFAULT_RASTER_PLAN,
+  ENGINE_MAX_PIXEL_COUNT,
+  pdfPageSizesOf,
+  planFromTooLargeLog,
+  rasterPlanFor,
+  type RasterPlan,
+} from './pageRaster.js';
 
 export interface OmrRunOptions {
   /** The Audiveris invocation, e.g. `['/opt/audiveris/bin/Audiveris']` — or a fake
@@ -24,8 +32,9 @@ export interface OmrRunOptions {
   /** Kill the OMR run after this long — scans of dense books can hang. */
   timeoutMs: number;
   /** JVM max heap for the engine run, in `-Xmx` syntax (`6g`, `4096m`). Unset keeps the
-   *  engine's own default — Audiveris 5.10.2 bakes `-Xmx8g` into its start script,
-   *  which is fine on a ≥16 GB host but oversized for smaller boxes. */
+   *  engine's own default: Audiveris 5.10.2 baked `-Xmx8g` into its start script (fine
+   *  on a ≥16 GB host, oversized for smaller boxes); 5.11.0 bakes none, so its JVM
+   *  takes a quarter of the memory it sees (a container's limit, when it has one). */
   javaMaxHeap?: string;
 }
 
@@ -58,7 +67,11 @@ export type OmrFailureClass =
   | 'timeout'
   /** Audiveris ended without output for a reason we couldn't classify — the log tail
    *  is the best available diagnosis. */
-  | 'omr-failed';
+  | 'omr-failed'
+  /** A page is too large for the engine's pixel limit even at the lowest resolution the
+   *  service will use (src/pageRaster.ts) — the file needs scaling down. The detail
+   *  names the page size, written for the person who uploaded it. */
+  | 'page-too-large';
 
 export interface OmrResult {
   status: 'done' | 'failed';
@@ -67,6 +80,9 @@ export interface OmrResult {
   /** Present when per-sheet salvage was applied: the 1-based sheets EXCLUDED to save
    *  the rest of the book. The client should tell its user these pages are missing. */
   excludedSheets?: number[];
+  /** Sentences the client should pass on to its user about HOW the score was read —
+   *  today, that large pages were read at a lower resolution than the tuned 400 DPI. */
+  notes?: string[];
   failure?: { class: OmrFailureClass; detail: string };
   /** The last portion of the combined stdout/stderr — enough context to diagnose
    *  without shipping megabytes of log. */
@@ -250,10 +266,11 @@ function classifyFailure(log: string, timedOut: boolean): { class: OmrFailureCla
   return { class: 'omr-failed', detail: 'Audiveris produced no output — see the log tail.' };
 }
 
+
 /**
  * Tuned engine constants, passed as `-constant KEY=VALUE` pairs (the only tuning
- * surface Audiveris 5.10.2 exposes in batch; CLI constants are NOT persisted in
- * batch mode, so every run stays reproducible).
+ * surface Audiveris exposes in batch; CLI constants are NOT persisted in batch mode, so
+ * every run stays reproducible).
  *
  * `pdfResolution=400`: raise PDF rasterization from the default 300 DPI to 400 —
  * the engine's own guidance for scores with small symbols, and the ONE option that
@@ -263,24 +280,29 @@ function classifyFailure(log: string, timedOut: boolean): { class: OmrFailureCla
  * 34→23 and 49→42, source voice rows 8→6 on the closed-score sample, lyric
  * syllables 664→707 with stranded plain-text words 1→0 on the open-score sample.
  * Cost: ~40–70% longer runs, still within a 2g heap. Only affects PDF inputs;
- * plain image inputs ignore it.
+ * plain image inputs ignore it. A PDF whose pages are too large for the engine's pixel
+ * limit at 400 DPI is read at a fitted resolution instead (src/pageRaster.ts).
  *
  * Measured and rejected, for the record: `ProcessingSwitches.lyricsAboveStaff`
  * (rescued a few stranded lyric lines on one score but doubled voice rows and
  * +10 bar-length defects on the other), `implicitTuplets` (+6 bar-length),
  * `bothSharedHeadDots` (+1 bar-length), GLOBAL binarization and
- * `Profiles.defaultQuality=Poor` (both byte-identical no-ops on this corpus).
+ * `Profiles.defaultQuality=Poor` (both byte-identical no-ops on this corpus); and on
+ * 2026-10-25 (ten scores, 5.10.2 and 5.11.0), 450/500/600 DPI — 500 and 600 need the
+ * pixel limit raised for EVERY page, cost 1.9–3.1× the time, lost most text-layer lyrics
+ * (the app's scale fit stops at 0.7 of the declared scale, which tracks 300 / DPI) and at
+ * 600 three scores exported nothing — and `Profiles.defaultQuality=Synthetic` (neutral).
  */
-const TUNED_ENGINE_CONSTANTS = [
-  '-constant',
-  'org.audiveris.omr.image.ImageLoading.pdfResolution=400',
-] as const;
+function engineConstantsFor(pdfResolution: number): string[] {
+  return ['-constant', `org.audiveris.omr.image.ImageLoading.pdfResolution=${pdfResolution}`];
+}
 
 /** One Audiveris pass over the input; `sheets` restricts which pages are processed. */
 async function runOnce(
   inputPath: string,
   outputDirectory: string,
   options: OmrRunOptions,
+  pdfResolution: number,
   sheets?: readonly number[],
   abortSignal?: AbortSignal,
 ): Promise<{ outcome: ProcessOutcome; movements: MovementFile[] }> {
@@ -291,14 +313,24 @@ async function runOnce(
     sheets && sheets.length > 0 ? ['-sheets', ...sheets.map(String)] : [];
   // The Gradle-generated Audiveris start script assembles the java command line as
   // `$DEFAULT_JVM_OPTS $JAVA_OPTS $AUDIVERIS_OPTS`, and HotSpot lets the LAST -Xmx win —
-  // so AUDIVERIS_OPTS reliably overrides the -Xmx8g baked into 5.10.2's DEFAULT_JVM_OPTS.
-  // (JAVA_TOOL_OPTIONS would NOT work: the JVM prepends it, so the baked 8g would win.)
+  // so AUDIVERIS_OPTS reliably overrides any -Xmx in DEFAULT_JVM_OPTS (5.10.2 baked in
+  // -Xmx8g; 5.11.0 bakes none, so the JVM's own default of a quarter of the container's
+  // memory applies unless this is set). JAVA_TOOL_OPTIONS would NOT work: the JVM
+  // prepends it, so a baked value would win.
   const environmentOverrides = options.javaMaxHeap
     ? { AUDIVERIS_OPTS: `-Xmx${options.javaMaxHeap}` }
     : undefined;
   const outcome = await runProcess(
     options.audiverisCommand,
-    ['-batch', '-export', ...TUNED_ENGINE_CONSTANTS, ...sheetArguments, '-output', outputDirectory, inputPath],
+    [
+      '-batch',
+      '-export',
+      ...engineConstantsFor(pdfResolution),
+      ...sheetArguments,
+      '-output',
+      outputDirectory,
+      inputPath,
+    ],
     options.timeoutMs,
     environmentOverrides,
     abortSignal,
@@ -306,10 +338,48 @@ async function runOnce(
   return { outcome, movements: await collectMovements(outputDirectory) };
 }
 
+const logTailOf = (log: string) => log.slice(-LOG_TAIL_CHARS);
+
+const DELETED_WHILE_RUNNING: OmrResult = {
+  status: 'failed',
+  movements: [],
+  failure: { class: 'omr-failed', detail: 'The job was deleted while it was running.' },
+  logTail: '',
+};
+
+function pageTooLarge(detail: string, log: string): OmrResult {
+  return { status: 'failed', movements: [], failure: { class: 'page-too-large', detail }, logTail: logTailOf(log) };
+}
+
+/** The plan for this input: a PDF's from its page sizes; anything else the default. An
+ *  unreadable file falls back to the default — the engine's own refusal is the better
+ *  diagnosis. */
+async function rasterPlanOfInput(inputPath: string): Promise<RasterPlan> {
+  if (!isPdfPath(inputPath)) return DEFAULT_RASTER_PLAN;
+  try {
+    return rasterPlanFor(pdfPageSizesOf(await readFile(inputPath)));
+  } catch {
+    return DEFAULT_RASTER_PLAN;
+  }
+}
+
+const isPdfPath = (path: string) => /\.pdf$/i.test(path);
+
+/** What one conversion has run so far: the pass that counts, the log of every pass, the
+ *  resolution that pass used and the notes owed to the client. */
+interface ConversionState {
+  pass: { outcome: ProcessOutcome; movements: MovementFile[] };
+  log: string;
+  pdfResolution: number;
+  notes: string[];
+}
+
 /**
- * Convert one score: a full pass first; when the book exports nothing because
- * individual sheets are broken, ONE salvage retry excluding exactly those sheets.
- * The result always says what happened — movements, exclusions, or a failure class.
+ * Convert one score: read the PDF's page sizes and pick the resolution; a full pass;
+ * when the engine still refused a page as too large (a size the scan could not read), ONE
+ * pass at the resolution its log implies; when the book exports nothing because
+ * individual sheets are broken, ONE salvage retry excluding exactly those sheets. The
+ * result always says what happened — movements, exclusions, notes, or a failure class.
  */
 export async function convertScore(
   inputPath: string,
@@ -317,59 +387,119 @@ export async function convertScore(
   options: OmrRunOptions,
   abortSignal?: AbortSignal,
 ): Promise<OmrResult> {
-  const fullPass = await runOnce(inputPath, outputDirectory, options, undefined, abortSignal);
-  if (fullPass.outcome.aborted) {
-    return {
-      status: 'failed',
-      movements: [],
-      failure: { class: 'omr-failed', detail: 'The job was deleted while it was running.' },
-      logTail: '',
-    };
+  const plan = await rasterPlanOfInput(inputPath);
+  if (plan.kind === 'too-large') return pageTooLarge(plan.detail, '');
+  const fullPass = await runOnce(inputPath, outputDirectory, options, plan.pdfResolution, undefined, abortSignal);
+  if (fullPass.outcome.aborted) return DELETED_WHILE_RUNNING;
+  let state: ConversionState = {
+    pass: fullPass,
+    log: fullPass.outcome.log,
+    pdfResolution: plan.pdfResolution,
+    notes: plan.note ? [plan.note] : [],
+  };
+  if (state.pass.movements.length === 0) {
+    const refitted = await refitAfterTooLargeRefusal(inputPath, outputDirectory, options, state, abortSignal);
+    if ('status' in refitted) return refitted;
+    state = refitted;
   }
-  const logTailOf = (log: string) => log.slice(-LOG_TAIL_CHARS);
-  if (fullPass.movements.length > 0) {
-    return { status: 'done', movements: fullPass.movements, logTail: logTailOf(fullPass.outcome.log) };
+  if (state.pass.movements.length > 0) {
+    return { status: 'done', movements: state.pass.movements, ...notesOf(state), logTail: logTailOf(state.log) };
   }
+  return salvageBrokenSheets(inputPath, outputDirectory, options, state, abortSignal);
+}
 
-  // Per-sheet salvage: Audiveris refuses whole-book export over one broken page. When
-  // the log names the broken sheets AND the total, retry on the healthy complement.
-  // The total is capped: it is parsed from a log line, and allocating an unbounded
-  // array from untrusted text would be a self-inflicted out-of-memory (review note).
-  const brokenSheets = brokenSheetsOf(fullPass.outcome.log);
-  const totalSheets = totalSheetsOf(fullPass.outcome.log);
+const notesOf = (state: ConversionState) => (state.notes.length > 0 ? { notes: state.notes } : {});
+
+/**
+ * The backstop for a page size the PDF scan could not read: the engine refused a sheet
+ * as too large, and its log names the pixel count. A PDF gets one pass at the resolution
+ * that fits; an image (whose pixels no setting changes) or a page too large even at the
+ * floor fails as `page-too-large`. No refusal in the log → the state, unchanged.
+ */
+async function refitAfterTooLargeRefusal(
+  inputPath: string,
+  outputDirectory: string,
+  options: OmrRunOptions,
+  state: ConversionState,
+  abortSignal?: AbortSignal,
+): Promise<ConversionState | OmrResult> {
+  const refit = planFromTooLargeLog(state.log, state.pdfResolution);
+  if (!refit) return state;
+  if (!isPdfPath(inputPath)) {
+    return pageTooLarge(
+      `This image is larger than the scan engine's ${ENGINE_MAX_PIXEL_COUNT / 1_000_000}-megapixel page limit — scale it down and try again.`,
+      state.log,
+    );
+  }
+  if (refit.kind === 'too-large') return pageTooLarge(refit.detail, state.log);
+  const pass = await runOnce(inputPath, outputDirectory, options, refit.pdfResolution, undefined, abortSignal);
+  if (pass.outcome.aborted) return DELETED_WHILE_RUNNING;
+  return {
+    pass,
+    log: `${state.log}\n--- retry at ${refit.pdfResolution} DPI (a page was too large) ---\n${pass.outcome.log}`,
+    pdfResolution: refit.pdfResolution,
+    notes: refit.note ? [refit.note] : [],
+  };
+}
+
+/**
+ * Per-sheet salvage: Audiveris refuses whole-book export over one broken page. When the
+ * log names the broken sheets AND the total, retry on the healthy complement. The total
+ * is capped: it is parsed from a log line, and allocating an unbounded array from
+ * untrusted text would be a self-inflicted out-of-memory (review note).
+ */
+async function salvageBrokenSheets(
+  inputPath: string,
+  outputDirectory: string,
+  options: OmrRunOptions,
+  state: ConversionState,
+  abortSignal?: AbortSignal,
+): Promise<OmrResult> {
+  const passLog = state.pass.outcome.log;
+  const brokenSheets = brokenSheetsOf(passLog);
+  const totalSheets = totalSheetsOf(passLog);
   const salvageable =
-    !fullPass.outcome.timedOut &&
+    !state.pass.outcome.timedOut &&
     brokenSheets.length > 0 &&
     totalSheets !== null &&
     totalSheets <= MAX_SALVAGE_SHEETS;
-  if (salvageable) {
-    const healthySheets = Array.from({ length: totalSheets }, (_, index) => index + 1).filter(
-      (sheetNumber) => !brokenSheets.includes(sheetNumber),
-    );
-    if (healthySheets.length > 0) {
-      const salvagePass = await runOnce(inputPath, outputDirectory, options, healthySheets, abortSignal);
-      const combinedLog = `${fullPass.outcome.log}\n--- salvage retry (sheets ${healthySheets.join(', ')}) ---\n${salvagePass.outcome.log}`;
-      if (salvagePass.movements.length > 0) {
-        return {
-          status: 'done',
-          movements: salvagePass.movements,
-          excludedSheets: brokenSheets,
-          logTail: combinedLog.slice(-LOG_TAIL_CHARS),
-        };
-      }
-      return {
-        status: 'failed',
-        movements: [],
-        failure: classifyFailure(combinedLog, salvagePass.outcome.timedOut),
-        logTail: combinedLog.slice(-LOG_TAIL_CHARS),
-      };
-    }
+  const healthySheets = salvageable
+    ? Array.from({ length: totalSheets }, (_, index) => index + 1).filter(
+        (sheetNumber) => !brokenSheets.includes(sheetNumber),
+      )
+    : [];
+  if (healthySheets.length === 0) {
+    return {
+      status: 'failed',
+      movements: [],
+      ...notesOf(state),
+      failure: classifyFailure(state.log, state.pass.outcome.timedOut),
+      logTail: logTailOf(state.log),
+    };
   }
-
+  const salvagePass = await runOnce(
+    inputPath,
+    outputDirectory,
+    options,
+    state.pdfResolution,
+    healthySheets,
+    abortSignal,
+  );
+  const combinedLog = `${state.log}\n--- salvage retry (sheets ${healthySheets.join(', ')}) ---\n${salvagePass.outcome.log}`;
+  if (salvagePass.movements.length > 0) {
+    return {
+      status: 'done',
+      movements: salvagePass.movements,
+      excludedSheets: brokenSheets,
+      ...notesOf(state),
+      logTail: logTailOf(combinedLog),
+    };
+  }
   return {
     status: 'failed',
     movements: [],
-    failure: classifyFailure(fullPass.outcome.log, fullPass.outcome.timedOut),
-    logTail: logTailOf(fullPass.outcome.log),
+    ...notesOf(state),
+    failure: classifyFailure(combinedLog, salvagePass.outcome.timedOut),
+    logTail: logTailOf(combinedLog),
   };
 }

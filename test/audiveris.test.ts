@@ -151,6 +151,68 @@ describe('convertScore — the corpus-taught contract', () => {
   });
 });
 
+describe('large pages (#14) — the resolution follows the page size', () => {
+  /** A fake PDF whose first line names the scenario and whose page objects carry boxes. */
+  async function pdfInput(scenario: string, pageBoxes: readonly string[]) {
+    const directory = await mkdtemp(join(tmpdir(), 'omr-test-'));
+    temporaryDirectories.push(directory);
+    const inputPath = join(directory, `${scenario}.pdf`);
+    const pages = pageBoxes.map((box, index) => `${index + 1} 0 obj\n<< /Type /Page ${box} >>\nendobj\n`);
+    await writeFile(inputPath, `${scenario}\n%PDF-1.7\n${pages.join('')}`, 'latin1');
+    return { inputPath, outDirectory: join(directory, 'out') };
+  }
+
+  it('an A4 book is read at 400 DPI with no note — nothing changes for ordinary pages', async () => {
+    const { inputPath, outDirectory } = await pdfInput('ok', ['/MediaBox [0 0 595.28 841.89]']);
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.status).toBe('done');
+    expect(result.logTail).toContain('[fake] pdfResolution=400');
+    expect(result.notes).toBeUndefined();
+  });
+
+  it('Abode-sized pages are read at 308 DPI in ONE pass, and the notes say so', async () => {
+    const { inputPath, outDirectory } = await pdfInput('large-pages', [
+      '/MediaBox [0 0 909.4488 1170.446]',
+      '/MediaBox [0 0 909.4488 1196.623]',
+    ]);
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.status).toBe('done');
+    expect(result.movements.map((movement) => movement.filename)).toEqual(['large-pages/large-pages.mxl']);
+    expect(result.logTail).toContain('[fake] pdfResolution=308');
+    expect(result.logTail).not.toContain('pdfResolution=400');
+    expect(result.notes).toEqual([expect.stringContaining('read at 308 DPI instead of 400')]);
+  });
+
+  it('a size the scan cannot see: the engine’s refusal is retried ONCE at the fitted DPI — not salvaged away', async () => {
+    const { inputPath, outDirectory } = await pdfInput('large-pages-hidden', ['/MediaBox 7 0 R']);
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.status).toBe('done');
+    expect(result.excludedSheets).toBeUndefined();
+    expect(result.logTail).toContain('retry at 307 DPI');
+    expect(result.notes).toEqual([expect.stringContaining('307 DPI')]);
+  });
+
+  it('a page too large even at 300 DPI fails at once, naming its size — the engine is never spawned', async () => {
+    const { inputPath, outDirectory } = await pdfInput('ok', ['/MediaBox [0 0 1728 2592]']);
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.status).toBe('failed');
+    expect(result.failure?.class).toBe('page-too-large');
+    expect(result.failure?.detail).toContain('24.0 × 36.0 in');
+    expect(result.logTail).toBe('');
+  });
+
+  it('an image over the limit fails as page-too-large — no DPI can shrink it, and salvage must not run', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'omr-test-'));
+    temporaryDirectories.push(directory);
+    const inputPath = join(directory, 'too-large-image.png');
+    await writeFile(inputPath, 'too-large-image.png');
+    const result = await convertScore(inputPath, join(directory, 'out'), options());
+    expect(result.failure?.class).toBe('page-too-large');
+    expect(result.failure?.detail).toContain('image is larger');
+    expect(result.logTail).not.toContain('salvage retry');
+  });
+});
+
 describe('JVM heap sizing — the OMR_JAVA_MAX_HEAP knob', () => {
   it('a configured heap reaches the engine process as AUDIVERIS_OPTS (the fake echoes it)', async () => {
     const { inputPath, outDirectory } = await scenarioInput('ok');

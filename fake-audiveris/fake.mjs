@@ -23,6 +23,17 @@ if (sheetsIndex >= 0) {
   }
 }
 const inputPath = processArguments[processArguments.length - 1];
+// Echo the resolution the service asked for, so the suite can assert the page-size rule.
+const resolutionArgument = processArguments.find((argument) => argument.includes('pdfResolution='));
+const pdfResolution = resolutionArgument ? Number(resolutionArgument.split('=')[1]) : 300;
+console.log(`[fake] pdfResolution=${pdfResolution}`);
+// A 12.6 x 16.6 in page (the owner's "Abode nyinaa wura", 909.4488 x 1196.623 pt), the way
+// the real engine refuses it: 33,580,644 pixels at 400 DPI; it fits from 308 DPI down.
+const refuseLargePage = () => {
+  console.log('WARN  [large#1]  SheetStub 411  | Too large image: 33,580,644 pixels (vs 20,000,000 max)');
+  console.log('INFO  [large#1]  SheetStub 1194 | Sheet large#1 flagged as invalid.');
+  console.log('INFO  [large]  Book 596  | Could not export since transcription did not complete successfully');
+};
 const scenario = basename(inputPath).replace(/\.pdf$/i, '');
 // The job store always uploads as input.pdf — the scenario travels in the CONTENT when
 // the filename is generic (the store writes the original name as the first line).
@@ -119,6 +130,15 @@ switch (effectiveScenario) {
     await new Promise((resolve) => grandchild.on('exit', resolve));
     break;
   }
+  case 'large-pages':
+  case 'large-pages-hidden':
+    if (pdfResolution > 308) refuseLargePage();
+    else writeMovement(effectiveScenario, `${effectiveScenario}.mxl`);
+    break;
+  case 'too-large-image.png':
+    console.log('WARN  [image#1]  SheetStub 411  | Too large image: 30,000,000 pixels (vs 20,000,000 max)');
+    console.log('INFO  [image#1]  SheetStub 1194 | Sheet image#1 flagged as invalid.');
+    break;
   case 'garbage':
     console.log('Could not load input as a score');
     break;

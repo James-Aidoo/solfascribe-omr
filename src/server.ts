@@ -3,7 +3,7 @@
  *
  *   POST   /jobs                 multipart upload (field "score") → 202 { jobId }
  *   GET    /jobs/:id             → { status, scoreName, movements[], excludedSheets?,
- *                                    failure?, logTail? }
+ *                                    notes?, failure?, logTail? }
  *   GET    /jobs/:id/files/:name → one movement's MusicXML bytes
  *   DELETE /jobs/:id             → remove the job and its files immediately
  *
@@ -134,6 +134,7 @@ export function buildServer(store: JobStore) {
       scoreName: job.scoreName,
       movements: job.result?.movements ?? [],
       ...(job.result?.excludedSheets ? { excludedSheets: job.result.excludedSheets } : {}),
+      ...(job.result?.notes ? { notes: job.result.notes } : {}),
       ...(job.result?.failure ? { failure: job.result.failure } : {}),
       ...(job.result && job.status === 'failed' ? { logTail: job.result.logTail } : {}),
     };

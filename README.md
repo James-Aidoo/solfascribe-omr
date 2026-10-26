@@ -29,9 +29,9 @@ Built as the conversion companion of [SolfaScribe](https://github.com/James-Aido
   reports `excludedSheets` — so the client can tell its user exactly which pages are
   missing instead of failing the whole score.
 - **Honest failure classes.** `rhythm-analysis-abort` (Audiveris's own rhythm step gave
-  up — no retry can help), `unreadable-input`, `timeout`, `omr-failed` — each with a log
-  tail for diagnosis.
-- **A measured, minimal tuned invocation.** Every run passes
+  up — no retry can help), `unreadable-input`, `page-too-large` (below), `timeout`,
+  `omr-failed` — each with a log tail for diagnosis.
+- **A measured, minimal tuned invocation.** Every run starts with
   `-constant org.audiveris.omr.image.ImageLoading.pdfResolution=400` (PDF rasterization
   at 400 DPI instead of Audiveris's default 300 — the engine's own recommendation for
   small symbols). It was the single winner of an A/B sweep over real corpus scores
@@ -41,13 +41,46 @@ Built as the conversion companion of [SolfaScribe](https://github.com/James-Aido
   dots, global binarization, poor-input profile, explicit OCR language) measured neutral
   or worse and are deliberately NOT set — the rationale lives with the constant in
   `src/audiveris.ts`.
+- **Large pages are retried at a fitted resolution; only a poster-sized page is refused.**
+  Audiveris refuses any sheet whose image is over 20,000,000 pixels
+  (`org.audiveris.omr.step.LoadStep.maxPixelCount`) — and with every sheet refused it exports
+  nothing. At 400 DPI an A4 or Letter page is 15–16 MP and fits, but an A3 page is 31 MP,
+  Tabloid 30 MP, and the 12.6 × 16.6 in scan that found this (#14) 33.6 MP. Every run starts
+  at 400 DPI, so ordinary scores see no change. When the engine refuses a sheet, its log
+  names the image it loaded (`Loaded image #2 5052x6647`, then `Too large image: 33,580,644
+  pixels`), and the service retries the book ONCE:
+  - at the highest whole DPI at which the **largest** refused page fits, down to **300** —
+    the job's `notes` say so ("…read at 308 DPI instead of 400…"); when every page is large
+    (the usual large-format book) the refused pass ends within seconds, so the retry costs
+    little more than the run itself (Abode: a 7 s refusal, then the 308 DPI read);
+  - a page that would not fit even at 300 DPI (over about 222 square inches — larger than
+    13 × 17 in; a poster, say) is not retried: the job fails as `page-too-large`, naming the
+    page size the log reported;
+  - an IMAGE upload over the limit fails as `page-too-large` too (no DPI setting shrinks an
+    image), and a run that TIMED OUT is never retried at another resolution.
+
+  The service parses no PDF itself to get there: the engine's log is the only input, read
+  in one linear, length-capped pass (review 2026-10-26 — an earlier draft that read page
+  boxes from the upload could be frozen by a few hundred kilobytes of crafted bytes).
+
+  Why fitting the DPI rather than raising the engine's pixel limit: both were measured on
+  that score (2026-10-25, Audiveris 5.11.0, the production VM, scored with SolfaScribe's
+  own checks). At 308 DPI it read the same 41 bars and 503 notes as at 400 DPI with the
+  limit raised to 34 MP, with 3 bar-length misreads against 4, 212 lyric syllables against
+  215 — and took 173 s against 405 s, at a 1.7 GB peak against 2.6 GB. Twice the time buys
+  nothing, and on a large-format book it is the difference between finishing inside the
+  15-minute budget and not. The floor is 300 because below it the engine reads small
+  symbols worse (its own guidance) and because the declared MusicXML scale tracks
+  300 / DPI, which SolfaScribe's lyric fitter only searches from 0.7 to 1.2 — 300–400 DPI
+  stays inside that range. The arithmetic and its tests: `src/largePages.ts`,
+  `test/largePages.test.ts`.
 
 ## API
 
 | Route | Meaning |
 | ----- | ------- |
 | `POST /jobs` (multipart file) | Submit a score → `202 { jobId }` (conversion is async; scores take seconds to minutes) |
-| `GET /jobs/:id` | `{ status, scoreName, movements[], excludedSheets?, failure?, logTail? }` |
+| `GET /jobs/:id` | `{ status, scoreName, movements[], excludedSheets?, notes?, failure?, logTail? }` — `notes` are sentences for the user about how the score was read (today: a lowered resolution for large pages) |
 | `GET /jobs/:id/files/:name` | One movement's MusicXML bytes |
 | `DELETE /jobs/:id` | Remove the job and its files immediately |
 
@@ -93,9 +126,12 @@ host), `OMR_CONCURRENCY` (1 — OMR is memory-hungry; raise it only with the RAM
 state, finished ones included, so fast-failing uploads cannot fill the disk through the
 queue cap), `AUDIVERIS_LOG_DIR` (unset — the engine's own log directory, swept after every
 run; see Privacy), `OMR_JAVA_MAX_HEAP` (unset — caps the engine JVM's heap, e.g. `6g`;
-Audiveris 5.10.2's own start script bakes in `-Xmx8g`, oversized for hosts under 16 GB —
+Audiveris 5.10.2's start script baked in `-Xmx8g`, oversized for hosts under 16 GB, and
+5.11.0's bakes none, leaving the JVM a quarter of the memory it sees — set it either way;
 note that the jpackage `.exe` launcher on Windows ignores this knob; see
-deploy/home/README.md).
+deploy/home/README.md), `GDK_SCALE` (the Docker image sets `1`; **required** with
+Audiveris 5.11.0 on any host without GTK — unset, 5.11 probes the screen's scale through
+libgtk-3 at start-up and dies with `UnsatisfiedLinkError` before reading a page).
 
 What the service accepts: a `.pdf`, `.png`, `.jpg`/`.jpeg` or `.tif`/`.tiff` whose leading
 bytes are that format's — anything else is refused with 415 before the engine is spawned

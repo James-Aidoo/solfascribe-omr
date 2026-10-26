@@ -114,6 +114,19 @@ describe('the 5xx mask', () => {
     expect(response.json()).toEqual({ error: 'The conversion service hit an internal error.' });
   });
 
+  it('a job’s notes reach the client (large pages read at a lower DPI, #14)', async () => {
+    const note = 'The pages are large (12.6 × 16.6 in), so they were read at 308 DPI instead of 400.';
+    const finished = {
+      get: () => ({
+        status: 'done',
+        scoreName: 'abode.pdf',
+        result: { status: 'done', movements: [], notes: [note], logTail: 'engine chatter' },
+      }),
+    } as unknown as JobStore;
+    const response = await buildServer(finished).inject({ method: 'GET', url: '/jobs/any' });
+    expect(response.json()).toEqual({ status: 'done', scoreName: 'abode.pdf', movements: [], notes: [note] });
+  });
+
   it('an unknown job → 404', async () => {
     const server = buildServer(await makeStore());
     const response = await server.inject({ method: 'GET', url: '/jobs/nope' });

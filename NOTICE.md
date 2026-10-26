@@ -8,7 +8,7 @@ engine, which is licensed under the **GNU Affero General Public License v3.0**.
 
 - Audiveris source code: https://github.com/Audiveris/audiveris
 - The exact version bundled is pinned by the `AUDIVERIS_VERSION` build argument in the
-  [Dockerfile](./Dockerfile) (currently 5.10.2).
+  [Dockerfile](./Dockerfile) (currently 5.11.0).
 
 The glue service in `src/` is a separate program that invokes Audiveris as a
 command-line subprocess and is licensed under MIT (see [LICENSE](./LICENSE)). If you

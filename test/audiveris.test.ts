@@ -151,6 +151,67 @@ describe('convertScore — the corpus-taught contract', () => {
   });
 });
 
+describe('large pages (#14) — a page the engine refuses is retried once at a fitted DPI', () => {
+  it('an ordinary book is read at 400 DPI in one pass, with no note', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('ok');
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.status).toBe('done');
+    expect(result.logTail).toContain('[fake] pdfResolution=400');
+    expect(result.logTail).not.toContain('retry at');
+    expect(result.notes).toBeUndefined();
+  });
+
+  it('Abode: refused at 400 DPI, retried ONCE at 308 from the logged size, and the notes say so', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('large-pages');
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.status).toBe('done');
+    expect(result.movements.map((movement) => movement.filename)).toEqual(['large-pages/large-pages.mxl']);
+    expect(result.excludedSheets).toBeUndefined(); // retried, not salvaged away
+    expect(result.logTail).toContain('retry at 308 DPI');
+    expect(result.logTail).not.toContain('salvage retry');
+    expect(result.notes).toEqual([
+      "The pages are large (12.6 × 16.6 in), so they were read at 308 DPI instead of 400 to stay under the scan engine's 20-megapixel page limit.",
+    ]);
+  });
+
+  it('a refusal without its `Loaded image` line still fits, from the count alone', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('large-pages-no-size');
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.status).toBe('done');
+    expect(result.logTail).toContain('retry at 308 DPI');
+    expect(result.notes).toEqual([expect.stringMatching(/^The pages are large, so they were read at 308 DPI/)]);
+  });
+
+  it('a page too large even at 300 DPI fails as page-too-large, naming the size the log reported — no retry', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('poster');
+    const result = await convertScore(inputPath, outDirectory, options());
+    expect(result.status).toBe('failed');
+    expect(result.failure?.class).toBe('page-too-large');
+    expect(result.failure?.detail).toContain('24.0 × 36.0 in (9600 × 14400 pixels at 400 DPI)');
+    expect(result.failure?.detail).toContain('even at 300 DPI');
+    expect(result.logTail).not.toContain('retry');
+  });
+
+  it('a TIMED-OUT pass is never refitted, even with a refusal in its log — the job ends at one timeout', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('large-pages-then-hang');
+    const result = await convertScore(inputPath, outDirectory, options(1500));
+    expect(result.failure?.class).toBe('timeout');
+    expect(result.logTail).not.toContain('retry at');
+    expect(result.logTail.match(/\[fake\] pdfResolution=/g)).toHaveLength(1);
+  });
+
+  it('an image over the limit fails as page-too-large — no DPI can shrink it, and salvage must not run', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'omr-test-'));
+    temporaryDirectories.push(directory);
+    const inputPath = join(directory, 'too-large-image.png');
+    await writeFile(inputPath, 'too-large-image.png');
+    const result = await convertScore(inputPath, join(directory, 'out'), options());
+    expect(result.failure?.class).toBe('page-too-large');
+    expect(result.failure?.detail).toContain('image is larger');
+    expect(result.logTail).not.toContain('salvage retry');
+  });
+});
+
 describe('JVM heap sizing — the OMR_JAVA_MAX_HEAP knob', () => {
   it('a configured heap reaches the engine process as AUDIVERIS_OPTS (the fake echoes it)', async () => {
     const { inputPath, outDirectory } = await scenarioInput('ok');
@@ -201,5 +262,23 @@ describe('log parsing helpers', () => {
     // The real batch log states no total; stub/sheet/image ordinals carry it.
     expect(totalSheetsOf('End of Stub#1\nStored /sheet#2/sheet#2.xml\nLoaded image #2')).toBe(2);
     expect(totalSheetsOf('nothing here')).toBeNull();
+  });
+
+  it('a hostile long line is read in linear time (review 2026-10-26: 40,000 digits took 3.8 s)', () => {
+    // 100,000 characters: instant when linear, about 25 s if a quadratic pattern came back —
+    // long enough to fail the bound, short enough to fail rather than hang the suite.
+    const hostileLines = [
+      '1'.repeat(100_000),
+      `${'1'.repeat(50_000)}${' '.repeat(50_000)}`,
+      `sheet ${' '.repeat(100_000)}`,
+      `Sheet #${'9'.repeat(100_000)} flagged as invalid`,
+      'stub #1 '.repeat(12_500),
+    ];
+    for (const line of hostileLines) {
+      const startedAt = Date.now();
+      totalSheetsOf(line);
+      brokenSheetsOf(line);
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+    }
   });
 });

@@ -14,16 +14,9 @@
  *    unreachable by any retry; clients need this failure class called out explicitly.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import {
-  DEFAULT_RASTER_PLAN,
-  ENGINE_MAX_PIXEL_COUNT,
-  pdfPageSizesOf,
-  planFromTooLargeLog,
-  rasterPlanFor,
-  type RasterPlan,
-} from './pageRaster.js';
+import { ENGINE_MAX_PIXEL_COUNT, largePageRetryOf, PREFERRED_PDF_RESOLUTION } from './largePages.js';
 
 export interface OmrRunOptions {
   /** The Audiveris invocation, e.g. `['/opt/audiveris/bin/Audiveris']` — or a fake
@@ -69,8 +62,8 @@ export type OmrFailureClass =
    *  is the best available diagnosis. */
   | 'omr-failed'
   /** A page is too large for the engine's pixel limit even at the lowest resolution the
-   *  service will use (src/pageRaster.ts) — the file needs scaling down. The detail
-   *  names the page size, written for the person who uploaded it. */
+   *  service will use (src/largePages.ts), or an image upload is over it — the file needs
+   *  scaling down. The detail names the size, written for the person who uploaded it. */
   | 'page-too-large';
 
 export interface OmrResult {
@@ -228,10 +221,14 @@ export function brokenSheetsOf(log: string): number[] {
  *  stub/sheet/image ordinal the run touched (the batch log states no total; every sheet
  *  leaves `Stub#N` / `sheet#N` / `image #N` traces). */
 export function totalSheetsOf(log: string): number | null {
-  const stated = /(\d+)\s+sheets?\b/i.exec(log) ?? /sheets?\s*[:=]\s*(\d+)/i.exec(log);
+  // Every quantifier is bounded, and a stated number must start where a digit run starts:
+  // an unbounded `(\d+)\s+sheets` backtracks at every digit of a long run — 40,000 digits
+  // held the event loop for 3.8 s (review 2026-10-26).
+  const stated =
+    /(?<!\d)(\d{1,6})\s{1,8}sheets?\b/i.exec(log) ?? /sheets?\s{0,8}[:=]\s{0,8}(\d{1,6})/i.exec(log);
   if (stated) return Number(stated[1]);
   let highestOrdinal = 0;
-  for (const match of log.matchAll(/(?:stub|sheet|image)\s*#(\d+)/gi)) {
+  for (const match of log.matchAll(/(?:stub|sheet|image)\s{0,8}#(\d{1,6})/gi)) {
     highestOrdinal = Math.max(highestOrdinal, Number(match[1]));
   }
   return highestOrdinal > 0 ? highestOrdinal : null;
@@ -266,7 +263,6 @@ function classifyFailure(log: string, timedOut: boolean): { class: OmrFailureCla
   return { class: 'omr-failed', detail: 'Audiveris produced no output — see the log tail.' };
 }
 
-
 /**
  * Tuned engine constants, passed as `-constant KEY=VALUE` pairs (the only tuning
  * surface Audiveris exposes in batch; CLI constants are NOT persisted in batch mode, so
@@ -280,8 +276,8 @@ function classifyFailure(log: string, timedOut: boolean): { class: OmrFailureCla
  * 34→23 and 49→42, source voice rows 8→6 on the closed-score sample, lyric
  * syllables 664→707 with stranded plain-text words 1→0 on the open-score sample.
  * Cost: ~40–70% longer runs, still within a 2g heap. Only affects PDF inputs;
- * plain image inputs ignore it. A PDF whose pages are too large for the engine's pixel
- * limit at 400 DPI is read at a fitted resolution instead (src/pageRaster.ts).
+ * plain image inputs ignore it. A PDF whose pages the engine refuses as too large at
+ * 400 DPI is retried once at a fitted resolution (src/largePages.ts).
  *
  * Measured and rejected, for the record: `ProcessingSwitches.lyricsAboveStaff`
  * (rescued a few stranded lyric lines on one score but doubled voice rows and
@@ -351,18 +347,6 @@ function pageTooLarge(detail: string, log: string): OmrResult {
   return { status: 'failed', movements: [], failure: { class: 'page-too-large', detail }, logTail: logTailOf(log) };
 }
 
-/** The plan for this input: a PDF's from its page sizes; anything else the default. An
- *  unreadable file falls back to the default — the engine's own refusal is the better
- *  diagnosis. */
-async function rasterPlanOfInput(inputPath: string): Promise<RasterPlan> {
-  if (!isPdfPath(inputPath)) return DEFAULT_RASTER_PLAN;
-  try {
-    return rasterPlanFor(pdfPageSizesOf(await readFile(inputPath)));
-  } catch {
-    return DEFAULT_RASTER_PLAN;
-  }
-}
-
 const isPdfPath = (path: string) => /\.pdf$/i.test(path);
 
 /** What one conversion has run so far: the pass that counts, the log of every pass, the
@@ -375,9 +359,8 @@ interface ConversionState {
 }
 
 /**
- * Convert one score: read the PDF's page sizes and pick the resolution; a full pass;
- * when the engine still refused a page as too large (a size the scan could not read), ONE
- * pass at the resolution its log implies; when the book exports nothing because
+ * Convert one score: a full pass at 400 DPI; when the engine refused a page as too large,
+ * ONE pass at the resolution its log implies; when the book exports nothing because
  * individual sheets are broken, ONE salvage retry excluding exactly those sheets. The
  * result always says what happened — movements, exclusions, notes, or a failure class.
  */
@@ -387,17 +370,14 @@ export async function convertScore(
   options: OmrRunOptions,
   abortSignal?: AbortSignal,
 ): Promise<OmrResult> {
-  const plan = await rasterPlanOfInput(inputPath);
-  if (plan.kind === 'too-large') return pageTooLarge(plan.detail, '');
-  const fullPass = await runOnce(inputPath, outputDirectory, options, plan.pdfResolution, undefined, abortSignal);
+  const resolution = PREFERRED_PDF_RESOLUTION;
+  const fullPass = await runOnce(inputPath, outputDirectory, options, resolution, undefined, abortSignal);
   if (fullPass.outcome.aborted) return DELETED_WHILE_RUNNING;
-  let state: ConversionState = {
-    pass: fullPass,
-    log: fullPass.outcome.log,
-    pdfResolution: plan.pdfResolution,
-    notes: plan.note ? [plan.note] : [],
-  };
-  if (state.pass.movements.length === 0) {
+  let state: ConversionState = { pass: fullPass, log: fullPass.outcome.log, pdfResolution: resolution, notes: [] };
+  // A timed-out pass is never refitted: the engine refuses a page within seconds of loading
+  // it, so a run that used its whole budget was not stopped by a refusal, and a second
+  // full pass would keep the job running far past the client's deadline.
+  if (state.pass.movements.length === 0 && !state.pass.outcome.timedOut) {
     const refitted = await refitAfterTooLargeRefusal(inputPath, outputDirectory, options, state, abortSignal);
     if ('status' in refitted) return refitted;
     state = refitted;
@@ -411,10 +391,10 @@ export async function convertScore(
 const notesOf = (state: ConversionState) => (state.notes.length > 0 ? { notes: state.notes } : {});
 
 /**
- * The backstop for a page size the PDF scan could not read: the engine refused a sheet
- * as too large, and its log names the pixel count. A PDF gets one pass at the resolution
- * that fits; an image (whose pixels no setting changes) or a page too large even at the
- * floor fails as `page-too-large`. No refusal in the log → the state, unchanged.
+ * The engine refused a sheet as too large, and its log names the size it loaded. A PDF
+ * gets one pass at the resolution that fits; an image (whose pixels no setting changes) or
+ * a page too large even at the 300 DPI floor fails as `page-too-large`. No refusal in the
+ * log → the state, unchanged.
  */
 async function refitAfterTooLargeRefusal(
   inputPath: string,
@@ -423,7 +403,7 @@ async function refitAfterTooLargeRefusal(
   state: ConversionState,
   abortSignal?: AbortSignal,
 ): Promise<ConversionState | OmrResult> {
-  const refit = planFromTooLargeLog(state.log, state.pdfResolution);
+  const refit = largePageRetryOf(state.log, state.pdfResolution);
   if (!refit) return state;
   if (!isPdfPath(inputPath)) {
     return pageTooLarge(
@@ -438,7 +418,7 @@ async function refitAfterTooLargeRefusal(
     pass,
     log: `${state.log}\n--- retry at ${refit.pdfResolution} DPI (a page was too large) ---\n${pass.outcome.log}`,
     pdfResolution: refit.pdfResolution,
-    notes: refit.note ? [refit.note] : [],
+    notes: [refit.note],
   };
 }
 

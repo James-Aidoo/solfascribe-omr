@@ -31,7 +31,7 @@ Built as the conversion companion of [SolfaScribe](https://github.com/James-Aido
 - **Honest failure classes.** `rhythm-analysis-abort` (Audiveris's own rhythm step gave
   up — no retry can help), `unreadable-input`, `page-too-large` (below), `timeout`,
   `omr-failed` — each with a log tail for diagnosis.
-- **A measured, minimal tuned invocation.** Every run whose pages fit (next point) passes
+- **A measured, minimal tuned invocation.** Every run starts with
   `-constant org.audiveris.omr.image.ImageLoading.pdfResolution=400` (PDF rasterization
   at 400 DPI instead of Audiveris's default 300 — the engine's own recommendation for
   small symbols). It was the single winner of an A/B sweep over real corpus scores
@@ -41,18 +41,27 @@ Built as the conversion companion of [SolfaScribe](https://github.com/James-Aido
   dots, global binarization, poor-input profile, explicit OCR language) measured neutral
   or worse and are deliberately NOT set — the rationale lives with the constant in
   `src/audiveris.ts`.
-- **Large pages are read at a fitted resolution, never refused for their size alone.**
+- **Large pages are retried at a fitted resolution; only a poster-sized page is refused.**
   Audiveris refuses any sheet whose image is over 20,000,000 pixels
   (`org.audiveris.omr.step.LoadStep.maxPixelCount`) — and with every sheet refused it exports
   nothing. At 400 DPI an A4 or Letter page is 15–16 MP and fits, but an A3 page is 31 MP,
-  Tabloid 30 MP, and the 12.6 × 16.6 in scan that found this (#14) 33.6 MP. So the service
-  reads each PDF's page sizes before the run and picks ONE resolution for the book:
-  - every page fits at 400 DPI → 400, exactly as before (ordinary scores see no change);
-  - otherwise → the highest whole DPI at which the **largest** page fits, down to **300**,
-    and the job's `notes` say so ("…read at 308 DPI instead of 400…");
-  - a page that would not fit even at 300 DPI (over about 222 square inches — larger
-    than 13 × 17 in; a poster, say) → the job fails at once as `page-too-large`, naming the page size, before the
-    engine is spawned.
+  Tabloid 30 MP, and the 12.6 × 16.6 in scan that found this (#14) 33.6 MP. Every run starts
+  at 400 DPI, so ordinary scores see no change. When the engine refuses a sheet, its log
+  names the image it loaded (`Loaded image #2 5052x6647`, then `Too large image: 33,580,644
+  pixels`), and the service retries the book ONCE:
+  - at the highest whole DPI at which the **largest** refused page fits, down to **300** —
+    the job's `notes` say so ("…read at 308 DPI instead of 400…"); when every page is large
+    (the usual large-format book) the refused pass ends within seconds, so the retry costs
+    little more than the run itself (Abode: a 7 s refusal, then the 308 DPI read);
+  - a page that would not fit even at 300 DPI (over about 222 square inches — larger than
+    13 × 17 in; a poster, say) is not retried: the job fails as `page-too-large`, naming the
+    page size the log reported;
+  - an IMAGE upload over the limit fails as `page-too-large` too (no DPI setting shrinks an
+    image), and a run that TIMED OUT is never retried at another resolution.
+
+  The service parses no PDF itself to get there: the engine's log is the only input, read
+  in one linear, length-capped pass (review 2026-10-26 — an earlier draft that read page
+  boxes from the upload could be frozen by a few hundred kilobytes of crafted bytes).
 
   Why fitting the DPI rather than raising the engine's pixel limit: both were measured on
   that score (2026-10-25, Audiveris 5.11.0, the production VM, scored with SolfaScribe's
@@ -63,11 +72,8 @@ Built as the conversion companion of [SolfaScribe](https://github.com/James-Aido
   15-minute budget and not. The floor is 300 because below it the engine reads small
   symbols worse (its own guidance) and because the declared MusicXML scale tracks
   300 / DPI, which SolfaScribe's lyric fitter only searches from 0.7 to 1.2 — 300–400 DPI
-  stays inside that range. Should the size scan miss a page (a box held by reference),
-  the engine's own "Too large image: N pixels" refusal is caught and the book retried once
-  at the resolution N implies; an IMAGE upload over the limit fails as `page-too-large`
-  (no DPI setting shrinks an image). The arithmetic and its tests: `src/pageRaster.ts`,
-  `test/pageRaster.test.ts`.
+  stays inside that range. The arithmetic and its tests: `src/largePages.ts`,
+  `test/largePages.test.ts`.
 
 ## API
 

@@ -151,54 +151,53 @@ describe('convertScore — the corpus-taught contract', () => {
   });
 });
 
-describe('large pages (#14) — the resolution follows the page size', () => {
-  /** A fake PDF whose first line names the scenario and whose page objects carry boxes. */
-  async function pdfInput(scenario: string, pageBoxes: readonly string[]) {
-    const directory = await mkdtemp(join(tmpdir(), 'omr-test-'));
-    temporaryDirectories.push(directory);
-    const inputPath = join(directory, `${scenario}.pdf`);
-    const pages = pageBoxes.map((box, index) => `${index + 1} 0 obj\n<< /Type /Page ${box} >>\nendobj\n`);
-    await writeFile(inputPath, `${scenario}\n%PDF-1.7\n${pages.join('')}`, 'latin1');
-    return { inputPath, outDirectory: join(directory, 'out') };
-  }
-
-  it('an A4 book is read at 400 DPI with no note — nothing changes for ordinary pages', async () => {
-    const { inputPath, outDirectory } = await pdfInput('ok', ['/MediaBox [0 0 595.28 841.89]']);
+describe('large pages (#14) — a page the engine refuses is retried once at a fitted DPI', () => {
+  it('an ordinary book is read at 400 DPI in one pass, with no note', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('ok');
     const result = await convertScore(inputPath, outDirectory, options());
     expect(result.status).toBe('done');
     expect(result.logTail).toContain('[fake] pdfResolution=400');
+    expect(result.logTail).not.toContain('retry at');
     expect(result.notes).toBeUndefined();
   });
 
-  it('Abode-sized pages are read at 308 DPI in ONE pass, and the notes say so', async () => {
-    const { inputPath, outDirectory } = await pdfInput('large-pages', [
-      '/MediaBox [0 0 909.4488 1170.446]',
-      '/MediaBox [0 0 909.4488 1196.623]',
-    ]);
+  it('Abode: refused at 400 DPI, retried ONCE at 308 from the logged size, and the notes say so', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('large-pages');
     const result = await convertScore(inputPath, outDirectory, options());
     expect(result.status).toBe('done');
     expect(result.movements.map((movement) => movement.filename)).toEqual(['large-pages/large-pages.mxl']);
-    expect(result.logTail).toContain('[fake] pdfResolution=308');
-    expect(result.logTail).not.toContain('pdfResolution=400');
-    expect(result.notes).toEqual([expect.stringContaining('read at 308 DPI instead of 400')]);
+    expect(result.excludedSheets).toBeUndefined(); // retried, not salvaged away
+    expect(result.logTail).toContain('retry at 308 DPI');
+    expect(result.logTail).not.toContain('salvage retry');
+    expect(result.notes).toEqual([
+      "The pages are large (12.6 × 16.6 in), so they were read at 308 DPI instead of 400 to stay under the scan engine's 20-megapixel page limit.",
+    ]);
   });
 
-  it('a size the scan cannot see: the engine’s refusal is retried ONCE at the fitted DPI — not salvaged away', async () => {
-    const { inputPath, outDirectory } = await pdfInput('large-pages-hidden', ['/MediaBox 7 0 R']);
+  it('a refusal without its `Loaded image` line still fits, from the count alone', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('large-pages-no-size');
     const result = await convertScore(inputPath, outDirectory, options());
     expect(result.status).toBe('done');
-    expect(result.excludedSheets).toBeUndefined();
-    expect(result.logTail).toContain('retry at 307 DPI');
-    expect(result.notes).toEqual([expect.stringContaining('307 DPI')]);
+    expect(result.logTail).toContain('retry at 308 DPI');
+    expect(result.notes).toEqual([expect.stringMatching(/^The pages are large, so they were read at 308 DPI/)]);
   });
 
-  it('a page too large even at 300 DPI fails at once, naming its size — the engine is never spawned', async () => {
-    const { inputPath, outDirectory } = await pdfInput('ok', ['/MediaBox [0 0 1728 2592]']);
+  it('a page too large even at 300 DPI fails as page-too-large, naming the size the log reported — no retry', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('poster');
     const result = await convertScore(inputPath, outDirectory, options());
     expect(result.status).toBe('failed');
     expect(result.failure?.class).toBe('page-too-large');
-    expect(result.failure?.detail).toContain('24.0 × 36.0 in');
-    expect(result.logTail).toBe('');
+    expect(result.failure?.detail).toContain('24.0 × 36.0 in (9600 × 14400 pixels at 400 DPI)');
+    expect(result.failure?.detail).toContain('even at 300 DPI');
+    expect(result.logTail).not.toContain('retry');
+  });
+
+  it('a TIMED-OUT pass is never refitted, even with a refusal in its log — the job ends at one timeout', async () => {
+    const { inputPath, outDirectory } = await scenarioInput('large-pages-then-hang');
+    const result = await convertScore(inputPath, outDirectory, options(1500));
+    expect(result.failure?.class).toBe('timeout');
+    expect(result.logTail).not.toContain('retry at');
+    expect(result.logTail.match(/\[fake\] pdfResolution=/g)).toHaveLength(1);
   });
 
   it('an image over the limit fails as page-too-large — no DPI can shrink it, and salvage must not run', async () => {
@@ -263,5 +262,23 @@ describe('log parsing helpers', () => {
     // The real batch log states no total; stub/sheet/image ordinals carry it.
     expect(totalSheetsOf('End of Stub#1\nStored /sheet#2/sheet#2.xml\nLoaded image #2')).toBe(2);
     expect(totalSheetsOf('nothing here')).toBeNull();
+  });
+
+  it('a hostile long line is read in linear time (review 2026-10-26: 40,000 digits took 3.8 s)', () => {
+    // 100,000 characters: instant when linear, about 25 s if a quadratic pattern came back —
+    // long enough to fail the bound, short enough to fail rather than hang the suite.
+    const hostileLines = [
+      '1'.repeat(100_000),
+      `${'1'.repeat(50_000)}${' '.repeat(50_000)}`,
+      `sheet ${' '.repeat(100_000)}`,
+      `Sheet #${'9'.repeat(100_000)} flagged as invalid`,
+      'stub #1 '.repeat(12_500),
+    ];
+    for (const line of hostileLines) {
+      const startedAt = Date.now();
+      totalSheetsOf(line);
+      brokenSheetsOf(line);
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+    }
   });
 });

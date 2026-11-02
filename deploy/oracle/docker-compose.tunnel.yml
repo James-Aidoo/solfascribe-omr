@@ -18,7 +18,7 @@ services:
   cloudflared:
     # Pinned: the connector is the one component that talks to the outside, and a moving
     # `latest` is not something to discover at 3 a.m. Bump it on purpose.
-    image: cloudflare/cloudflared:2026.9.1
+    image: cloudflare/cloudflared:2026.10.4
     restart: unless-stopped
     command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
     volumes:

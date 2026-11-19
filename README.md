@@ -81,7 +81,7 @@ Built as the conversion companion of [SolfaScribe](https://github.com/James-Aido
 | ----- | ------- |
 | `POST /jobs` (multipart file) | Submit a score → `202 { jobId }` (conversion is async; scores take seconds to minutes) |
 | `GET /jobs/:id` | `{ status, scoreName, movements[], excludedSheets?, notes?, failure?, logTail? }` — `notes` are sentences for the user about how the score was read (today: a lowered resolution for large pages) |
-| `GET /jobs/:id/files/:name` | One movement's MusicXML bytes |
+| `GET /jobs/:id/files/:name` | One movement's MusicXML bytes (`.mxl`). The engine's record of the input path is replaced, in both `<source>` and the `source-file` field, by the constant path-shaped value `/scan/input.pdf` (path-shaped so clients hide it from a printed header; constant so a score's key never depends on the upload's name; no file name is recorded) and the zip is rewritten with fixed timestamps — so the job's random folder never appears, and one PDF scanned twice, under any names, gives the same music apart from `<encoding-date>` (`src/mxlSource.ts`) |
 | `DELETE /jobs/:id` | Remove the job and its files immediately |
 
 ## Privacy

@@ -14,8 +14,9 @@
  *    unreachable by any retry; clients need this failure class called out explicitly.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { mxlWithFixedSource } from './mxlSource.js';
 import { ENGINE_MAX_PIXEL_COUNT, largePageRetryOf, PREFERRED_PDF_RESOLUTION } from './largePages.js';
 
 export interface OmrRunOptions {
@@ -331,7 +332,19 @@ async function runOnce(
     environmentOverrides,
     abortSignal,
   );
+  await fixSources(outputDirectory);
   return { outcome, movements: await collectMovements(outputDirectory) };
+}
+
+/** The engine records the input's absolute path in each result; a job's folder is a random
+ *  id, so that path would differ per scan and name this machine. Both fields become one fixed
+ *  value, so one PDF scanned twice gives the same music (mxlSource.ts). */
+async function fixSources(outputDirectory: string): Promise<void> {
+  for (const movement of await collectMovements(outputDirectory)) {
+    const path = join(outputDirectory, movement.filename);
+    const fixed = mxlWithFixedSource(await readFile(path));
+    if (fixed) await writeFile(path, fixed);
+  }
 }
 
 const logTailOf = (log: string) => log.slice(-LOG_TAIL_CHARS);

@@ -3,6 +3,7 @@
 // reproducible without Java. CI never needs the real engine.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { crc32 } from 'node:zlib';
 
 const processArguments = process.argv.slice(2);
 // Echo the JVM-options env var the service sets for heap sizing, so the suite can
@@ -50,7 +51,22 @@ const contentScenario = (() => {
     return '';
   }
 })();
-const effectiveScenario = scenario === 'input' ? contentScenario : scenario;
+// A first line of `scenario:<name>` names the scenario whatever the file is called, so a test
+// can upload a file with spaces or non-Latin letters in its name.
+const namedInContent = (() => {
+  try {
+    return readFileSync(inputPath, 'latin1')
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('scenario:'));
+  } catch {
+    return undefined;
+  }
+})();
+const effectiveScenario = namedInContent
+  ? namedInContent.slice('scenario:'.length).trim()
+  : scenario === 'input'
+    ? contentScenario
+    : scenario;
 
 const writeMovement = (bookName, movementFilename) => {
   const bookDirectory = join(outputDirectory, bookName);
@@ -58,7 +74,61 @@ const writeMovement = (bookName, movementFilename) => {
   writeFileSync(join(bookDirectory, movementFilename), `<fake-mxl scenario="${effectiveScenario}"/>`);
 };
 
+/** A real .mxl the way the engine writes one: a zip whose score carries the input's absolute
+ *  path in <source> and in the source-file field, stamped with the time of the run. */
+const writeSourcedMovement = () => {
+  const files = [
+    ['META-INF/container.xml', '<container><rootfiles><rootfile full-path="book.xml"/></rootfiles></container>'],
+    [
+      'book.xml',
+      `<score-partwise><identification><encoding><encoding-date>${process.hrtime.bigint()}</encoding-date></encoding>` +
+        `<source>${inputPath}</source><miscellaneous><miscellaneous-field name="source-file">${inputPath}</miscellaneous-field></miscellaneous></identification></score-partwise>`,
+    ],
+  ];
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const [name, text] of files) {
+    const nameBytes = Buffer.from(name);
+    const data = Buffer.from(text);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(dosTime, 10);
+    header.writeUInt16LE(dosDate, 12);
+    header.writeUInt32LE(crc32(data), 14);
+    header.writeUInt32LE(data.length, 18);
+    header.writeUInt32LE(data.length, 22);
+    header.writeUInt16LE(nameBytes.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    header.copy(central, 6, 4, 30);
+    central.writeUInt32LE(offset, 42);
+    localParts.push(header, nameBytes, data);
+    centralParts.push(central, nameBytes);
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  const bookDirectory = join(outputDirectory, 'book');
+  mkdirSync(bookDirectory, { recursive: true });
+  writeFileSync(join(bookDirectory, 'book.mxl'), Buffer.concat([...localParts, centralDirectory, end]));
+};
+
 switch (effectiveScenario) {
+  case 'sourced':
+    console.log('Processing book book, 1 sheets');
+    writeSourcedMovement();
+    break;
   case 'ok':
     console.log('Processing book ok, 1 sheets');
     writeMovement('ok', 'ok.mxl');
